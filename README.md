@@ -40,7 +40,7 @@ Forty-four pull requests later, these are the features and fixes we came up with
 ![A rocket over the DevOps worker running vercel deploy, a cheer for the push to main, and a red badge on the Tester with "tests failed in billing-api — 3 failing" in the chat](docs/images/signals.png)
 
 ### The whiteboard is your real task list
-![The kanban whiteboard with post-its in To do, In progress and Done, a red pin on a blocked task, labelled claude-office](docs/images/task-board.png)
+![The whiteboard comes alive: five post-its land in To do, one with a red pin because it is blocked; they move through In progress to Done, and hovering a post-it shows what the task is](docs/images/task-board.gif)
 
 ## What it is
 

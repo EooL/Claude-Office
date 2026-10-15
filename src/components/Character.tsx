@@ -62,6 +62,9 @@ function getAnimState(state: AgentState): string {
 }
 
 // Speech bubble only shown briefly when statusText changes (like posting to Slack)
+const BUBBLE_MS = 3200
+const SPEAKING_Z = 99
+
 function shouldShowBubble(state: AgentState): boolean {
   return state === 'talking-to-manager'
 }
@@ -86,6 +89,18 @@ const Character: React.FC<CharacterProps> = ({ agent, idleDurationMs = 0, zIndex
   const prevPosRef = useRef({ x: agent.position.x, y: agent.position.y })
   const directionRef = useRef<SpriteDirection>(agent.spriteFacing ?? 'front-right')
   const [turnedAround, setTurnedAround] = useState(false)
+
+  // While a speech bubble shows, the speaker is lifted above every other
+  // character (they are stacked by y, up to ~95) and under the incident tint
+  // (100), so tags and bubbles of whoever stands in front cannot cover it
+  const bubbleText = shouldShowBubble(agent.state) && agent.statusText ? agent.statusText : null
+  const [speaking, setSpeaking] = useState(false)
+  useEffect(() => {
+    if (!bubbleText) { setSpeaking(false); return }
+    setSpeaking(true)
+    const timer = setTimeout(() => setSpeaking(false), BUBBLE_MS)
+    return () => clearTimeout(timer)
+  }, [bubbleText])
 
   const isMoving = agent.state === 'new-hire' || agent.state === 'walking-to-desk' || agent.state === 'walking-to-manager' ||
     agent.state === 'coffee-break' || agent.state === 'completed' || agent.state === 'changing-room'
@@ -180,7 +195,7 @@ const Character: React.FC<CharacterProps> = ({ agent, idleDurationMs = 0, zIndex
         left: `${agent.position.x}%`,
         top: `${agent.position.y}%`,
         transform: 'translate(-50%, -100%)',
-        zIndex: zIndex ?? Math.round(agent.position.y),
+        zIndex: speaking ? SPEAKING_Z : zIndex ?? Math.round(agent.position.y),
       }}
       title={projectTag || main ? tooltip : undefined}
       data-main-state={mainState}
@@ -210,9 +225,9 @@ const Character: React.FC<CharacterProps> = ({ agent, idleDurationMs = 0, zIndex
         </div>
       )}
 
-      {shouldShowBubble(agent.state) && agent.statusText && (
+      {bubbleText && (
         // The boss handing a prompt over at Claude's desk (purple bubble); any other visitor keeps the plain one
-        <SpeechBubble key={agent.statusText} text={agent.statusText} isManager={agent.role === BOSS_ROLE} duration={3200} />
+        <SpeechBubble key={bubbleText} text={bubbleText} isManager={agent.role === BOSS_ROLE} duration={BUBBLE_MS} />
       )}
 
       <div

@@ -2,6 +2,14 @@
 
 All notable changes to Claude Office. Numbers refer to pull requests.
 
+## 1.1.1 — 2026-10-15
+
+### Fixes
+- Speech bubbles are readable again: while a character speaks it is drawn in front of everyone else, so the name tags and typing dots of whoever stands in front no longer cover the boss's prompt, and long bubble text wraps onto two lines instead of running off as one (#49).
+
+### Documentation
+- The README is back to its original shape and length, with a short 1.1 update, GIFs of the new features and the Claude crab; the hook details, settings, security model and feature internals move to `docs/reference.md` (#49–#56).
+
 ## 1.1.0 — 2026-10-15
 
 ### Truthful office

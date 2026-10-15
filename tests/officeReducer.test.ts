@@ -15,6 +15,7 @@ import {
   pickSingleEventAgent,
   walkDurationMs,
   errandWaitMs,
+  checkErrand,
   ERRAND_MIN_WAIT_MS,
   lobbyPosition,
   MAIN_ROOM,
@@ -1438,9 +1439,77 @@ describe("the boss's errands to the furniture", () => {
     expect(errandWaitMs(walk)).toBeGreaterThan(walk)
     // A short errand still gets at least the old 15 s
     expect(errandWaitMs(1000)).toBe(ERRAND_MIN_WAIT_MS)
-    // App.tsx watches for that long, not for a fixed time
+  })
+
+  /** Send the boss from his desk along `path` to `walkTo` as App.tsx does, animate at `fps` (dt capped at 3 like App.tsx's loop), and watch with checkErrand every 200 ms */
+  function runErrand(walkTo: { x: number; y: number }, path: { x: number; y: number }[], waitMs: number, fps: number) {
+    let state = emptyOffice()
+    state = { ...state, agents: state.agents.map(a => a.id === BOSS_ID ? { ...a, state: 'walking-to-desk' as const, targetPosition: walkTo, pathQueue: path } : a) }
+    const frameMs = 1000 / fps
+    const dt = Math.min(frameMs / 16.67, 3)
+    let elapsed = 0
+    let nextCheck = 200
+    for (;;) {
+      state = stepOffice(state, dt, env({ now: T0 + elapsed })).state
+      elapsed += frameMs
+      if (elapsed < nextCheck) continue
+      nextCheck += 200
+      const verdict = checkErrand(agent(state, BOSS_ID), walkTo, elapsed, waitMs)
+      if (verdict !== 'walking') return { verdict, elapsed }
+    }
+  }
+
+  it('a click from his desk on the kanban board gets him there before the watch gives up, detours included', () => {
+    const board = getInteraction('kanban-board', null)!.walkTo
+    const random = vi.spyOn(Math, 'random')
+    try {
+      // Every detour findWaypointPath can take (maybeTakeLongWay picks one at random), at 60, 20 and 12 fps
+      const { waypoints = [] } = MAIN_ROOM
+      for (let i = 0; i < waypoints.length; i++) {
+        const draws = [0.1, (i + 0.5) / waypoints.length]
+        random.mockImplementation(() => draws.length > 0 ? draws.shift()! : 0.5)
+        const path = route(board)
+        random.mockReturnValue(0.5)
+        const waitMs = errandWaitMs(walkDurationMs(desk, path, board))
+        for (const fps of [60, 20, 12]) {
+          expect(runErrand(board, path, waitMs, fps).verdict).toBe('arrived')
+        }
+      }
+    } finally {
+      random.mockRestore()
+    }
+  })
+
+  it('every errand from his desk arrives within the wait timed from the route he walks', () => {
+    for (const id of ['kanban-board', 'tv-monitor', 'printer-1', 'whiteboard', 'coffee', 'filing-1', 'water-cooler', 'bell', 'ship-it-poster', 'fire-extinguisher', 'plant-1', 'plant-2', 'plant-3', 'plant-4', 'plant-5']) {
+      const interaction = getInteraction(id, null)!
+      const path = route(interaction.walkTo)
+      const walkMs = walkDurationMs(desk, path, interaction.walkTo)
+      const { verdict, elapsed } = runErrand(interaction.walkTo, path, errandWaitMs(walkMs), 60)
+      expect(verdict, id).toBe('arrived')
+      expect(elapsed, id).toBeLessThan(errandWaitMs(walkMs))
+    }
+  })
+
+  it('checkErrand: arrived, still walking, redirected, or late (walk him back)', () => {
+    const board = getInteraction('kanban-board', null)!.walkTo
+    const boss = agent(emptyOffice(), BOSS_ID)!
+    const heading = { ...boss, state: 'walking-to-desk' as const, targetPosition: board }
+    expect(checkErrand(heading, board, 1_000, 20_000)).toBe('walking')
+    expect(checkErrand(heading, board, 20_001, 20_000)).toBe('late')
+    expect(checkErrand({ ...heading, position: { x: board.x + 1, y: board.y - 1 } }, board, 30_000, 20_000)).toBe('arrived')
+    // Sent somewhere else meanwhile (an office event, another click): stop, never drag him back
+    expect(checkErrand({ ...heading, targetPosition: { x: 10, y: 10 } }, board, 1_000, 20_000)).toBe('redirected')
+    expect(checkErrand({ ...heading, targetPosition: { x: 10, y: 10 } }, board, 30_000, 20_000)).toBe('redirected')
+    expect(checkErrand(undefined, board, 1_000, 20_000)).toBe('redirected')
+  })
+
+  it('App.tsx times the watch from the path it gives him and walks him back when it gives up', () => {
     const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
-    expect(app).toContain('clearInterval(checkArrival), errandWaitMs(walkMs))')
-    expect(app).not.toMatch(/clearInterval\(checkArrival\), \d+\)/)
+    const errand = app.slice(app.indexOf('const handleFurnitureClick'), app.indexOf('const typingTimeoutRef'))
+    expect(errand).toContain('errandWaitMs(walkDurationMs(bossNow.position, path, target))')
+    expect(errand).toContain('pathQueue: path,')
+    expect(errand).toContain("if (verdict === 'late') { walkBackToDesk(); return }")
+    expect(errand).not.toMatch(/clearInterval\(checkArrival\), \d+\)/)
   })
 })

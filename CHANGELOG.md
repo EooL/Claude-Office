@@ -6,6 +6,7 @@ All notable changes to Claude Office. Numbers refer to pull requests.
 
 ### Fixes
 - Speech bubbles are readable again: while a character speaks it is drawn in front of everyone else, so the name tags and typing dots of whoever stands in front no longer cover the boss's prompt, and long bubble text wraps onto two lines instead of running off as one (#49).
+- The boss no longer gets stuck mid-errand: sent to far-off furniture (the kanban board from his desk is a 17-second walk), he used to stand there with no line posted; his errand is now timed against the route he actually walks, and if it gives up he walks back to his desk (#57).
 
 ### Documentation
 - The README is back to its original shape and length, with a short 1.1 update, GIFs of the new features and the Claude crab; the hook details, settings, security model and feature internals move to `docs/reference.md` (#49–#56).

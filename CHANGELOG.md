@@ -2,7 +2,7 @@
 
 All notable changes to Claude Office. Numbers refer to pull requests.
 
-## Unreleased
+## 1.1.0 — 2026-10-15
 
 ### Truthful office
 - Subagents are linked to their worker the moment Claude Code starts them (`SubagentStart`); phantom `SubagentStop` events from the compaction and prompt-suggestion sidechains are ignored; a tool call that errors (`PostToolUseFailure`) shows as `failed:` on the agent that made it; nested spawns record their parent (#10).

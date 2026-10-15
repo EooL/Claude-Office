@@ -1,5 +1,49 @@
 # Claude Office
 
+## 🆙 New in 1.1.0 — the level-up
+
+> We had 12 hours and 90 % of our 20x plan still to use 😂 so I asked Claude to level up Claude Office (using Fable 5.1 and ultracode).
+
+Forty-four pull requests later, these are the features and fixes we came up with. The full list is in the [CHANGELOG](CHANGELOG.md).
+
+**New features**
+- **One pill per terminal, one Claude per session.** Every Claude Code session gets a pill in the title bar with its project, model and worker count, and its own Claude at a desk. The boss walks over and hands your prompt across, Claude types while the turn runs, dozes off when it is done, sweeps its desk on a compaction and holds a glass of water while background workers are still out.
+- **Needs-you.** A permission wait raises Claude's hand ✋ with a chime, turns the pill amber and puts ✋ in the window title.
+- **Answer permissions from the office.** Allow, Allow & remember or Deny on a card, and the real dialog in that terminal is answered.
+- **Click any character.** An inspector card shows the task, how long it has been at it, every tool it called (failed ones in red), its tokens and model, and the tail of its own transcript.
+- **The office reacts to your Bash commands.** A deploy in flight gets a 🚀 over whoever runs it, a push to main gets a 🎉, a red test run says *❌ tests failed in billing-api — 3 failing*, and a failed deploy (or three failed tool calls) turns on "Prod Is Down" incident mode.
+- **Payroll, electricity and memory meters.** Cost, tokens per minute and context-window fill for each session, plus the five-hour rate-limit pill. The memory meter is estimated from the transcript when there is no status line.
+- **A real task board.** The kanban whiteboard shows each session's `TaskCreate` list: To do, In progress, Done, with a red pin on blocked tasks.
+- **Sessions without hooks.** The office reads Claude Code's own session registry, so even an unhooked terminal shows up as a dashed *not hooked* pill.
+- **Health strip and `npm run doctor`.** The bottom bar shows online / offline, when a hook was last heard and who needs you; the doctor checks the whole install with PASS / WARN / FAIL.
+- **A proper desktop app.** It opens at the office's own size, has a tray icon with a working-agents badge, a compact always-on-top widget, and installers for macOS, Windows and Linux on every tagged release.
+- **A Claude Code plugin** (`agent-office`), and `npm run uninstall-hooks` to take it all back out.
+
+**Fixes and hardening**
+- Truthful workers: subagents are linked the moment they start, phantom stops are ignored, failed tool calls show on the agent that made them, and background agents stay at their desk until they really finish.
+- Workers walk in before they work, wait in a lobby when desks are full, and survive reconnects and server restarts.
+- Security: the WebSocket is authenticated with the office token (anyone else gets a read-only, text-free office), hook requests are signed rather than carrying the token on curl's command line, permission answers prove they came from your office, a Host-header guard blocks DNS rebinding, and private files are created `0600`.
+- The installer repairs moved checkouts, refuses a broken `settings.json` instead of wiping it, and chains an existing status line instead of replacing it.
+- The production build works again, the Electron bundle is self-contained, one port setting (`AGENT_OFFICE_PORT`) works everywhere, and the room images went on a diet (87 MB → 46 MB).
+- Three adversarial bug hunts, all findings fixed, and 972 tests running in CI.
+
+### Every terminal its own Claude, the boss handing over the prompt
+![Three session pills with model badges; the boss hands the prompt to the claude-office Claude in a speech bubble while its workers walk in](docs/images/sessions.png)
+
+### Click a character — the inspector card
+![Inspector card for the Explorer worker: task, tools used with a failed Bash call in red, tokens and model, and the tail of its own transcript](docs/images/inspector.png)
+
+### ✋ Needs you — answer the permission from the office
+![billing-api's Claude has its hand up, the pill is amber and the title says needs you; a card asks to run git push origin main with Allow, Allow & remember and Deny](docs/images/permission-card.png)
+
+### The office knows what your commands mean
+![A rocket over the DevOps worker running vercel deploy, a cheer for the push to main, and a red badge on the Tester with "tests failed in billing-api — 3 failing" in the chat](docs/images/signals.png)
+
+### The whiteboard is your real task list
+![The kanban whiteboard with post-its in To do, In progress and Done, a red pin on a blocked task, labelled claude-office](docs/images/task-board.png)
+
+## What it is
+
 A pixel-art office that shows what Claude Code is really doing: every terminal gets its own session pill, every subagent a worker at a desk, a failed tool call shows on the worker that made it, the lights go red when the build really breaks, and the wall meters show what the day cost.
 
 Claude Office is a local web page (or a desktop app) fed by Claude Code's hooks and status line. Agents walk in through the door, sit at desks, type, take coffee breaks and leave when they finish; you talk to them in a Slack-style chat panel; a "Prod Is Down" incident mode switches itself on after three failed tool calls; and the payroll / electricity / memory meters show cost, tokens per minute and context-window fill for each open session. Everything stays on your machine — the server listens on `127.0.0.1` only.
@@ -11,7 +55,7 @@ npm run install-hooks              # registers the Claude Code hooks + status li
 npm run build && npm run server    # the whole office on one port: http://127.0.0.1:3334
 ```
 
-For development, `npm run dev:all` runs the server and Vite (UI on `http://localhost:3333`), and `bash scripts/start-office.sh` does the same plus the chat AI watcher and opens the browser. Then spawn agents in Claude Code and watch them arrive. Full steps in [Quick start](#quick-start); hook details in [Connect Claude Code](#connect-claude-code).
+For development, `npm run dev:all` runs the server and Vite (UI on `http://127.0.0.1:3333`), and `bash scripts/start-office.sh` does the same plus the chat AI watcher and opens the browser. Then spawn agents in Claude Code and watch them arrive. Full steps in [Quick start](#quick-start); hook details in [Connect Claude Code](#connect-claude-code).
 
 Works on macOS and Linux, and on Windows through WSL or Git Bash with `python3` on the PATH (the hooks are bash scripts) — see [Platform support](#platform-support). MIT-licensed; the Dunder Mifflin skin is fan art, see [NOTICE.md](NOTICE.md).
 
@@ -121,7 +165,7 @@ npm run build && npm run server          # then, in another terminal:
 npm run open                             # opens http://127.0.0.1:3334 with the office token
 
 # Option B — development: server + Vite + the chat AI watcher, opens the browser
-bash scripts/start-office.sh             # opens http://localhost:3333 with the office token
+bash scripts/start-office.sh             # opens http://127.0.0.1:3333 with the office token
 bash scripts/stop-office.sh              # stop everything it started
 ```
 
@@ -403,7 +447,7 @@ The office also speaks a subset of the [Agent2Agent (A2A) protocol](https://a2a-
 `GET /.well-known/agent-card.json` and `GET /a2a/agents` are open (and the cards advertise a `bearer` security scheme). `POST /a2a` delivers a message as an agent, so it needs the office token — send it as `Authorization: Bearer <token>`, the contents of `~/.agent-office/auth-token`:
 
 ```bash
-curl -s localhost:3334/a2a \
+curl -s 127.0.0.1:3334/a2a \
   -H 'content-type: application/json' \
   -H "authorization: Bearer $(cat ~/.agent-office/auth-token)" -d '{
   "jsonrpc": "2.0", "id": 1, "method": "message/send",
@@ -424,12 +468,12 @@ The recipient goes in `metadata.to` (name, role or office id); replies thread th
 
 | URL | Mode |
 |-----|------|
-| `localhost:3333` | Live — connected to Claude Code via WebSocket (Vite dev server) |
-| `localhost:3333?sim` | Simulation — scripted demo with fake agents |
-| `localhost:3333?video` | Video — scripted recording mode |
-| `localhost:3333?helper` | Placement helper — dev tool for positioning furniture |
-| `localhost:3333?variant=incident` | Incident — pins "Prod Is Down" mode on (for screenshots) |
-| `localhost:3334` | Built — the office server serving `dist/` after `npm run build`; what the desktop app loads (on `AGENT_OFFICE_PORT` when set). The `?` flags above work here too |
+| `127.0.0.1:3333` | Live — connected to Claude Code via WebSocket (Vite dev server) |
+| `127.0.0.1:3333?sim` | Simulation — scripted demo with fake agents |
+| `127.0.0.1:3333?video` | Video — scripted recording mode |
+| `127.0.0.1:3333?helper` | Placement helper — dev tool for positioning furniture |
+| `127.0.0.1:3333?variant=incident` | Incident — pins "Prod Is Down" mode on (for screenshots) |
+| `127.0.0.1:3334` | Built — the office server serving `dist/` after `npm run build`; what the desktop app loads (on `AGENT_OFFICE_PORT` when set). The `?` flags above work here too |
 
 ## Skins
 

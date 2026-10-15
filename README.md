@@ -30,6 +30,9 @@ Forty-four pull requests later, these are the features and fixes we came up with
 ### Every terminal its own Claude, the boss handing over the prompt
 ![Three session pills with model badges; the boss hands the prompt to the claude-office Claude in a speech bubble while its workers walk in](docs/images/sessions.png)
 
+### Claude's turn, start to nap
+![The boss walks the prompt over to Claude, Claude reads and sends out an Explorer and a background Tester, wipes its memory at the desk during a compaction, the Explorer reports back with "done · 42k tok · 3m12s", Claude holds a glass of water while the Tester is still out, and 30 seconds after the turn ends it falls asleep](docs/images/claudes-turn.gif)
+
 ### Click a character — the inspector card
 ![Inspector card for the Explorer worker: task, tools used with a failed Bash call in red, tokens and model, and the tail of its own transcript](docs/images/inspector.png)
 
@@ -38,6 +41,9 @@ Forty-four pull requests later, these are the features and fixes we came up with
 
 ### The office knows what your commands mean
 ![A rocket over the DevOps worker running vercel deploy, a cheer for the push to main, and a red badge on the Tester with "tests failed in billing-api — 3 failing" in the chat](docs/images/signals.png)
+
+### Prod Is Down — and back again
+![A deploy goes out with a rocket over the DevOps worker, fails, and the office turns red with a spinning beacon and a live incident timer; the tests go green, the redeploy lands, the lights come back and a postmortem appears in the chat](docs/images/prod-is-down.gif)
 
 ### The whiteboard is your real task list
 ![The whiteboard comes alive: five post-its land in To do, one with a red pin because it is blocked; they move through In progress to Done, and hovering a post-it shows what the task is](docs/images/task-board.gif)

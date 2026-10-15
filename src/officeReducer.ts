@@ -1667,13 +1667,35 @@ export const ERRAND_MIN_WAIT_MS = 15_000
 
 /**
  * How long App.tsx watches for the boss to reach the furniture before it
- * gives up on the effect: the walk, with room for a slower frame rate (dt is
- * capped per frame, so a slow frame walks less), never under 15 s. A fixed
- * 15 s was shorter than his walk from his desk to the whiteboard, so he got
- * there and nothing happened.
+ * gives up on the effect and walks him back to his desk: twice the walk plus
+ * 5 s, never under 15 s. dt is capped at 3 frames, so below 20 fps he walks
+ * slower than WALK_SPEED; this still covers a walk at 10 fps. A fixed 15 s was
+ * shorter than his walk from his desk to the whiteboard, so he got there and
+ * nothing happened.
  */
 export function errandWaitMs(walkMs: number): number {
-  return Math.max(ERRAND_MIN_WAIT_MS, Math.ceil(walkMs * 1.5) + 2_000)
+  return Math.max(ERRAND_MIN_WAIT_MS, Math.ceil(walkMs * 2) + 5_000)
+}
+
+/** How close the boss has to be to the furniture for the errand to count as done */
+export const ERRAND_ARRIVAL_DIST = 2
+
+/**
+ * What App.tsx's errand watch does on each check, `elapsedMs` after the click:
+ * - arrived: he is at `walkTo` (show the effect, post the line, walk him back)
+ * - walking: still on his way and within `waitMs`; keep watching
+ * - redirected: he is gone or now heading somewhere else; stop, whoever sent
+ *   him elsewhere owns his walk back
+ * - late: still heading for `walkTo` but past `waitMs`; give up and walk him
+ *   back to his desk rather than leave him standing at the furniture
+ */
+export type ErrandCheck = 'arrived' | 'walking' | 'redirected' | 'late'
+
+export function checkErrand(boss: Agent | undefined, walkTo: Position, elapsedMs: number, waitMs: number): ErrandCheck {
+  if (!boss) return 'redirected'
+  if (Math.hypot(boss.position.x - walkTo.x, boss.position.y - walkTo.y) < ERRAND_ARRIVAL_DIST) return 'arrived'
+  if (!near(boss.targetPosition, walkTo)) return 'redirected'
+  return elapsedMs > waitMs ? 'late' : 'walking'
 }
 
 /** The one agent a single-agent event (printer jam) sends somewhere: never the boss, never a live worker or a Claude mid-turn */

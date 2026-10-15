@@ -20,7 +20,7 @@ import * as sfx from './sounds'
 import { findWaypointPath } from './agentManager'
 import {
   reduceOffice, stepOffice, initialOfficeState,
-  moveAgentsForEvent, returnAgentsFromEvent, pickSingleEventAgent, walkDurationMs, errandWaitMs,
+  moveAgentsForEvent, returnAgentsFromEvent, pickSingleEventAgent, walkDurationMs, errandWaitMs, checkErrand,
   MAIN_ROOM, BOSS_ID, CLAUDE_ID, CLAUDE_ROLE,
   type OfficeState, type OfficeAction, type OfficeEffect, type OfficeEnv,
 } from './officeReducer'
@@ -338,90 +338,93 @@ const App: React.FC = () => {
     if (now - lastUsed < interaction.cooldown) return
     interactionCooldowns.current.set(itemId, now)
 
-    // Walk boss to the item
+    // Walk boss to the item. The route is computed once, so the watch below is
+    // timed against the walk he actually takes (detours and jitter included)
     const target = interaction.walkTo
-    // How long to watch for him to get there: as long as the walk takes from where he stands
     const bossNow = agentsRef.current.find(a => a.id === BOSS_ID)
-    const walkMs = bossNow ? walkDurationMs(bossNow.position, findWaypointPath(bossNow.position.x, bossNow.position.y, target.x, target.y, MAIN_WAYPOINTS), target) : 0
+    if (!bossNow) return
+    const path = computePath(bossNow.position, target)
+    const waitMs = errandWaitMs(walkDurationMs(bossNow.position, path, target))
     updateAgents(prev => prev.map(a => {
       if (a.id !== BOSS_ID) return a
       return {
         ...a,
         state: 'walking-to-desk' as const,
         targetPosition: target,
-        pathQueue: computePath(a.position, target),
+        pathQueue: path,
         statusText: Array.isArray(interaction.chatMessage)
           ? interaction.chatMessage[Math.floor(Math.random() * interaction.chatMessage.length)]
           : interaction.chatMessage,
       }
     }))
 
-    // Set up arrival watcher — when boss reaches target, trigger effects
-    const checkArrival = setInterval(() => {
-      const boss = agentsRef.current.find(a => a.id === BOSS_ID)
-      if (!boss) { clearInterval(checkArrival); return }
-      const dist = Math.sqrt((boss.position.x - target.x) ** 2 + (boss.position.y - target.y) ** 2)
-      if (dist < 2) {
-        clearInterval(checkArrival)
-
-        // Play sound if specified
-        if (interaction.sound === 'bell') sfx.playBell()
-        else if (interaction.sound === 'notification') sfx.playNotification()
-        else if (interaction.sound === 'coffee') sfx.playCoffee()
-
-        // Show effect above boss
-        setBossEffect(interaction.effect)
-        schedule(() => setBossEffect(null), interaction.duration)
-
-        // Post chat message
-        const msg = Array.isArray(interaction.chatMessage)
-          ? interaction.chatMessage[Math.floor(Math.random() * interaction.chatMessage.length)]
-          : interaction.chatMessage
-        const bossCfg = AGENT_CONFIGS[BOSS_ROLE] ?? AGENT_CONFIGS['default']
-        // Use setMessages directly to avoid addMsg dependency ordering
-        setMessages(prev => [...prev.slice(-50), {
-          id: makeMsgId(),
-          sender: bossCfg.title,
-          senderSprite: BOSS_ROLE,
-          senderColor: bossCfg.color,
-          text: msg,
-          channel: 'office-general',
-          timestamp: timeNow(),
-        }])
-
-        // Furniture state change
-        if (interaction.furnitureState) {
-          const fs = interaction.furnitureState
-          setFurnitureStates(prev => ({ ...prev, [fs.id]: fs.state }))
-          if (fs.revertAfter) {
-            schedule(() => {
-              setFurnitureStates(prev => {
-                const next = { ...prev }
-                delete next[fs.id]
-                return next
-              })
-            }, fs.revertAfter)
-          }
+    const walkBackToDesk = () => {
+      updateAgents(prev => prev.map(a => {
+        if (a.id !== BOSS_ID) return a
+        return {
+          ...a,
+          state: 'walking-to-desk' as const,
+          targetPosition: { ...a.deskPosition },
+          pathQueue: computePath(a.position, a.deskPosition),
+          statusText: 'back to work',
         }
+      }))
+    }
 
-        // Walk boss back to desk after effect
-        schedule(() => {
-          updateAgents(prev => prev.map(a => {
-            if (a.id !== BOSS_ID) return a
-            return {
-              ...a,
-              state: 'walking-to-desk' as const,
-              targetPosition: { ...a.deskPosition },
-              pathQueue: computePath(a.position, a.deskPosition),
-              statusText: 'back to work',
-            }
-          }))
-        }, interaction.duration + 500)
+    // Watch for him to get there (checkErrand decides): on arrival trigger the
+    // effects; if he is still on his way well after the walk should have taken,
+    // give up and send him back to his desk rather than leave him at the item
+    const startedAt = Date.now()
+    const checkArrival = () => {
+      const verdict = checkErrand(agentsRef.current.find(a => a.id === BOSS_ID), target, Date.now() - startedAt, waitMs)
+      if (verdict === 'walking') { schedule(checkArrival, 200); return }
+      if (verdict === 'late') { walkBackToDesk(); return }
+      if (verdict === 'redirected') return
+
+      // Play sound if specified
+      if (interaction.sound === 'bell') sfx.playBell()
+      else if (interaction.sound === 'notification') sfx.playNotification()
+      else if (interaction.sound === 'coffee') sfx.playCoffee()
+
+      // Show effect above boss
+      setBossEffect(interaction.effect)
+      schedule(() => setBossEffect(null), interaction.duration)
+
+      // Post chat message
+      const msg = Array.isArray(interaction.chatMessage)
+        ? interaction.chatMessage[Math.floor(Math.random() * interaction.chatMessage.length)]
+        : interaction.chatMessage
+      const bossCfg = AGENT_CONFIGS[BOSS_ROLE] ?? AGENT_CONFIGS['default']
+      // Use setMessages directly to avoid addMsg dependency ordering
+      setMessages(prev => [...prev.slice(-50), {
+        id: makeMsgId(),
+        sender: bossCfg.title,
+        senderSprite: BOSS_ROLE,
+        senderColor: bossCfg.color,
+        text: msg,
+        channel: 'office-general',
+        timestamp: timeNow(),
+      }])
+
+      // Furniture state change
+      if (interaction.furnitureState) {
+        const fs = interaction.furnitureState
+        setFurnitureStates(prev => ({ ...prev, [fs.id]: fs.state }))
+        if (fs.revertAfter) {
+          schedule(() => {
+            setFurnitureStates(prev => {
+              const next = { ...prev }
+              delete next[fs.id]
+              return next
+            })
+          }, fs.revertAfter)
+        }
       }
-    }, 200)
 
-    // Safety: stop watching if he never arrives (sent elsewhere meanwhile)
-    setTimeout(() => clearInterval(checkArrival), errandWaitMs(walkMs))
+      // Walk boss back to desk after effect
+      schedule(walkBackToDesk, interaction.duration + 500)
+    }
+    schedule(checkArrival, 200)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 

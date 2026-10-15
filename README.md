@@ -2,7 +2,7 @@
 
 ## 🆙 New in 1.1.0 — the level-up
 
-> We had 12 hours and 90 % of our 20x plan still to use 😂 so I asked Claude to level up Claude Office (using Fable 5.1 and ultracode).
+> We had 12 hours and 90 % of our 20x plan still to use 😂 so I asked Claude to level up Claude Office (using Fable 5.1 <img src="docs/images/claude-spin.gif" height="32" alt="" align="absmiddle"> and <img src="docs/images/ultracode.svg" height="20" alt="ultracode" align="absmiddle">).
 
 Forty-four pull requests later, these are the features and fixes we came up with. The full list is in the [CHANGELOG](CHANGELOG.md).
 

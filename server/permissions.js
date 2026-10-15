@@ -9,21 +9,31 @@
  * nothing leaves the terminal dialog in charge. The hook is never cancelled
  * when the user answers in the terminal; its late output is simply ignored.
  *
+ * The hook builds that output itself from a single decision word
+ * (allow | allow-remember | deny) and never prints server-supplied JSON, so a
+ * port squatter cannot slip in an `updatedInput` or a rule the dialog never
+ * offered. It trusts the word only when the office proves it holds the token:
+ * the hook sends a random nonce on the POST, and the poll reply carries the
+ * decision plus a proof = HMAC(token, nonce + permissionId + decision) the
+ * hook verifies before printing anything. A squatter has never seen the token
+ * and cannot forge the proof, so its answers print nothing.
+ *
  * So the office works like this. The tracker POSTs the PermissionRequest as a
  * `session_needs_you {kind: permission, answerable: true}` and, for that one
  * event, waits for the answer: the /event response carries a permissionId and
  * the hook long-polls GET /permission/:id until the server says it is over.
- * A click in the office POSTs /permission/:id and the hook prints the
- * matching hookOutput. What the session does afterwards may mean the dialog
- * was answered elsewhere, and then the pending record is released as
- * `resolved_elsewhere` so the hook exits without printing and a late click
- * here gets a 409: the asking call's own PostToolUse (matched by tool name
- * and the hook's callKey, never another call of the same tool), the end of
- * the asking thread's batch, that thread's next tool call, the asking worker
- * finishing, Stop, UserPromptSubmit, a new PermissionRequest, SessionEnd —
- * and Claude Code's session registry leaving "waiting" (the dialog closed,
- * an Esc included, which fires no hook). server/index.js decides which
- * (releasePermissions). The terminal always wins.
+ * A click in the office POSTs /permission/:id and the hook builds and prints
+ * the matching output from the decision word (never server-supplied JSON, and
+ * only after verifying the token-proof). What the session does afterwards may
+ * mean the dialog was answered elsewhere, and then the pending record is
+ * released as `resolved_elsewhere` so the hook exits without printing and a
+ * late click here gets a 409: the asking call's own PostToolUse (matched by
+ * tool name and the hook's callKey, never another call of the same tool), the
+ * end of the asking thread's batch, that thread's next tool call, the asking
+ * worker finishing, Stop, UserPromptSubmit, a new PermissionRequest,
+ * SessionEnd — and Claude Code's session registry leaving "waiting" (the
+ * dialog closed, an Esc included, which fires no hook). server/index.js
+ * decides which (releasePermissions). The terminal always wins.
  *
  * Expiry. A headless `claude -p` session auto-denies the call the moment all
  * PermissionRequest hooks finish and never fires a Notification, so a long
@@ -37,7 +47,7 @@
  * exactly when the office matters, so the deadline is extended then.
  *
  *   store.create(fields)                  -> { permission, wait: { pollMs, deadline } }
- *   GET  /permission/:id?wait=<s>         (token) long-poll: { status, deadline, hookOutput? }
+ *   GET  /permission/:id?wait=<s>         (token) long-poll: { status, deadline, decision?, proof? }
  *   POST /permission/:id { decision }     (UI token or token) allow | allow-remember | deny
  *   GET  /permissions                     (open) the pending ones; the command line and
  *                                         the suggestions only with a token (redactPermission)
@@ -45,8 +55,9 @@
  * Broadcasts: permission_request on creation, permission_extended when a
  * deadline moves, permission_resolved {permissionId, status, decidedBy} on
  * every terminal state. decidedBy is 'office' (a click here), 'terminal'
- * (resolved elsewhere) or 'timeout'. The hookOutput printed by the hook is
- * built here and nowhere else; it never carries updatedInput.
+ * (resolved elsewhere) or 'timeout'. The long-poll reply names the decision
+ * word and a proof the office holds the token; the hook builds the output
+ * from the word, never from server JSON, and it never carries updatedInput.
  */
 
 import { randomBytes } from 'crypto'
@@ -102,20 +113,9 @@ function clampJson(value, depth) {
   return null
 }
 
-/** The exact object the hook prints for a decision (the PermissionRequest hook output contract). */
-export function hookOutputFor(decision, suggestions = []) {
-  const wrap = d => ({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: d } })
-  switch (decision) {
-    case 'allow':          return wrap({ behavior: 'allow' })
-    case 'allow-remember': return wrap({ behavior: 'allow', updatedPermissions: suggestions })
-    case 'deny':           return wrap({ behavior: 'deny', message: DENY_MESSAGE, interrupt: false })
-    default:               return null
-  }
-}
-
-/** Public shape of a record (no timers, no waiters). */
+/** Public shape of a record (no timers, no waiters, and never the nonce). */
 function toJSON(rec) {
-  const { timer, waiters, forget, ...pub } = rec
+  const { timer, waiters, forget, nonce, ...pub } = rec
   return pub
 }
 
@@ -123,14 +123,14 @@ function toJSON(rec) {
  * A record as a caller without the office token sees it: what the session's
  * hand already shows on GET /sessions (the tool, its one-line summary, the
  * project, the deadline) but not `detail` — the full command, path or tool
- * input — nor the suggestions (rules that may quote the command), a decided
- * record's hookOutput, or the callKey (a hash of the tool input, which would
- * confirm a guessed command). Used for GET /permissions and the WebSocket's
+ * input — nor the suggestions (rules that may quote the command), or the
+ * callKey (a hash of the tool input, which would confirm a guessed command).
+ * Used for GET /permissions and the WebSocket's
  * read-only connections (server/index.js).
  */
 export function redactPermission(rec) {
   if (!rec || typeof rec !== 'object') return rec
-  const { detail, suggestions, hookOutput, callKey, ...rest } = rec
+  const { detail, suggestions, callKey, ...rest } = rec
   return rest
 }
 
@@ -138,7 +138,7 @@ export function redactPermission(rec) {
  * The pending-permission store. `broadcast` gets every WS event; `now` is
  * injectable for tests. Timers are unref'd so they never keep the process up.
  */
-export function createPermissionStore({ broadcast = () => {}, now = Date.now } = {}) {
+export function createPermissionStore({ broadcast = () => {}, now = Date.now, proof = null } = {}) {
   /** @type {Map<string, object>} id -> record */
   const records = new Map()
   /** Sessions a Notification has been seen for: their permissions may wait the full PERMISSION_WAIT_MAX_MS. */
@@ -179,6 +179,9 @@ export function createPermissionStore({ broadcast = () => {}, now = Date.now } =
       permissionMode: String(fields.permissionMode || 'default'),
       ...(fields.promptId ? { promptId: String(fields.promptId) } : {}),
       ...(fields.agentId ? { agentId: String(fields.agentId) } : {}),
+      // The nonce the hook signs the server's proof over; never leaves the
+      // record (toJSON strips it), only feeds proofFor below.
+      ...(fields.nonce ? { nonce: String(fields.nonce) } : {}),
       // Which call asked (the hook's hash of its input): what tells this
       // dialog's own PostToolUse from another call of the same tool
       ...(fields.callKey ? { callKey: String(fields.callKey) } : {}),
@@ -206,10 +209,7 @@ export function createPermissionStore({ broadcast = () => {}, now = Date.now } =
     rec.status = status
     rec.decidedBy = decidedBy
     rec.decidedAt = t
-    if (decision) {
-      rec.decision = decision
-      rec.hookOutput = hookOutputFor(decision, rec.suggestions)
-    }
+    if (decision) rec.decision = decision
     console.log(`[permission] ${rec.project ?? rec.sessionId}: ${rec.toolName} ${rec.summary} -> ${status} (${decidedBy}${decision ? `: ${decision}` : ''})`)
     wake(rec)
     broadcast({ type: 'permission_resolved', permissionId: rec.id, sessionId: rec.sessionId, status, decidedBy, timestamp: t })
@@ -293,6 +293,17 @@ export function createPermissionStore({ broadcast = () => {}, now = Date.now } =
     markInteractive,
     waitFor,
     get: id => { const rec = records.get(id); return rec ? toJSON(rec) : null },
+    /**
+     * The proof that the office holds the token, for a decided record:
+     * HMAC(token, nonce + id + decision). null when the record is unknown,
+     * not decided, carried no nonce (an older hook), or no proof fn was wired.
+     * The hook verifies this before it builds and prints the decision.
+     */
+    proofFor: id => {
+      const rec = records.get(id)
+      if (!rec || !rec.decision || !rec.nonce || typeof proof !== 'function') return null
+      return proof(rec.nonce, rec.id, rec.decision)
+    },
     pending: () => Array.from(records.values()).filter(r => r.status === 'pending').map(toJSON),
     isInteractive: sessionId => interactive.has(sessionId),
     get size() { return records.size },
@@ -309,10 +320,10 @@ export function createPermissionStore({ broadcast = () => {}, now = Date.now } =
  * `onDecided` is called with the record after a click here, so
  * server/index.js can lower the session's needs-you hand.
  */
-export function mountPermissions(app, { requireToken, requireUi, broadcast, onDecided = () => {}, canSeeDetail = () => true, store } = {}) {
+export function mountPermissions(app, { requireToken, requireUi, broadcast, onDecided = () => {}, canSeeDetail = () => true, store, proof = null } = {}) {
   if (typeof requireToken !== 'function') throw new TypeError('mountPermissions needs the requireToken middleware')
   if (typeof requireUi !== 'function') throw new TypeError('mountPermissions needs the requireUi middleware')
-  const permissions = store ?? createPermissionStore({ broadcast })
+  const permissions = store ?? createPermissionStore({ broadcast, proof })
   app.locals.permissions = permissions
 
   app.get('/permissions', (req, res) => {
@@ -330,7 +341,10 @@ export function mountPermissions(app, { requireToken, requireUi, broadcast, onDe
     const rec = await promise
     if (res.writableEnded || res.destroyed) return
     if (!rec) return res.status(404).json({ error: 'Unknown permission' })
-    res.json({ status: rec.status, deadline: rec.deadline, ...(rec.hookOutput ? { hookOutput: rec.hookOutput } : {}) })
+    // The decision word and a proof the office holds the token; the hook
+    // builds the output from the word, never from server-supplied JSON.
+    const proofHex = rec.decision ? permissions.proofFor(id) : null
+    res.json({ status: rec.status, deadline: rec.deadline, ...(rec.decision && proofHex ? { decision: rec.decision, proof: proofHex } : {}) })
   })
 
   app.post('/permission/:id', requireUi, (req, res) => {

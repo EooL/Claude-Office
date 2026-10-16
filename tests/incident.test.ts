@@ -5,6 +5,8 @@
  * explicit clocks and never touch React, timers or localStorage.
  */
 
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   INCIDENT_CONFIG,
@@ -18,6 +20,8 @@ import {
   incidentTransitionLines,
   INCIDENT_LINES,
   signalIncidentInput,
+  shouldPlayAlarm,
+  ALARM_WINDOW_MS,
   type IncidentInput,
   type IncidentState,
   type IncidentTransition,
@@ -422,5 +426,38 @@ describe('incident mode — signals (what the Bash commands meant)', () => {
     expect(signalIncidentInput({ type: 'signal', kind: 'test_failed', project: 'web', detail: '2 failing', sessionId: 's9', agentId: 'agent-1', agentName: 'Tester' }, T0))
       .toEqual({ type: 'signal', at: T0, kind: 'test_failed', target: 'web', detail: '2 failing', error: undefined, interrupted: undefined, sessionId: 's9', agentId: 'agent-1', agentName: 'Tester' })
     expect(signalIncidentInput({ type: 'signal', kind: 'deploy_rolled_back' as SignalKind }, T0)).toBeNull()
+  })
+})
+
+describe('the alarm burst as prod goes down', () => {
+  const started = (at: number, over: Partial<IncidentState> = {}): IncidentState =>
+    ({ ...createIncidentState(), variant: 'incident', startedAt: at, ...over })
+
+  it('plays in the first moments of a real incident, and only then', () => {
+    expect(shouldPlayAlarm(started(10_000), 10_000)).toBe(true)
+    expect(shouldPlayAlarm(started(10_000), 10_000 + ALARM_WINDOW_MS - 1)).toBe(true)
+    // a reload halfway through the incident does not flash again
+    expect(shouldPlayAlarm(started(10_000), 10_000 + ALARM_WINDOW_MS)).toBe(false)
+  })
+
+  it('stays dark for a mini-incident, a pinned ?variant=incident with no start, and no incident at all', () => {
+    expect(shouldPlayAlarm(started(10_000, { mini: true }), 10_000)).toBe(false)
+    expect(shouldPlayAlarm(started(10_000, { startedAt: null, pinned: true }), 10_000)).toBe(false)
+    expect(shouldPlayAlarm(createIncidentState(), 10_000)).toBe(false)
+  })
+
+  it('flashes under 3 times a second, and not at all under reduced motion', () => {
+    const css = readFileSync(join(__dirname, '../src/styles/incident.css'), 'utf8')
+    const rule = css.match(/\.room-alarm \{[^}]*animation: incidentAlarm ([\d.]+)s[^}]*\}/)
+    expect(rule).not.toBeNull()
+    const seconds = Number(rule![1])
+    const frames = css.match(/@keyframes incidentAlarm \{([\s\S]*?)\n\}/)![1]
+    // the keyframe line that lights the room lists one percentage per flash
+    const lit = frames.split('\n').find(l => /opacity: 0\.[1-9]/.test(l))!
+    const peaks = lit.split('{')[0].split(',').length
+    expect(peaks).toBe(3)
+    expect(peaks / seconds).toBeLessThan(3)
+    const reduced = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'))
+    expect(reduced).toMatch(/\.room-alarm \{ display: none; \}|\.room-alarm[\s,]*\{\s*display: none/)
   })
 })

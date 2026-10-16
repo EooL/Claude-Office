@@ -144,6 +144,18 @@ export const INCIDENT_CONFIG = {
   maxRed: 20,
 } as const
 
+/**
+ * The alarm burst plays only in the first moments of a real incident, so a
+ * reload halfway through one (or a mini-incident from a random event) does
+ * not flash the room again.
+ */
+export const ALARM_WINDOW_MS = 4_000
+
+export function shouldPlayAlarm(state: IncidentState, now: number): boolean {
+  return state.variant === 'incident' && !state.mini && state.startedAt !== null
+    && now >= state.startedAt && now - state.startedAt < ALARM_WINDOW_MS
+}
+
 export const VARIANT_STORAGE_KEY = 'agent-office-variant'
 export const LAST_INCIDENT_STORAGE_KEY = 'agent-office-last-incident'
 const FIRST_SEEN_STORAGE_KEY = 'agent-office-first-seen'

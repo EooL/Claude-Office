@@ -2,6 +2,10 @@
 
 All notable changes to Claude Office. Numbers refer to pull requests.
 
+## Unreleased
+
+- Prod Is Down now sounds the alarm: as an incident starts the room flashes deep red three times over 1.8 s (under the 3-a-second photosensitivity limit), then settles into a darker red tint. A reload halfway through an incident, a mini-incident from a random event, and reduced-motion settings get no flash.
+
 ## 1.1.1 — 2026-10-15
 
 ### Fixes

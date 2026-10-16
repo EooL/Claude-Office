@@ -3,20 +3,38 @@
    (drawn in every mode) and the chat banner. Motion is disabled under
    prefers-reduced-motion at the bottom. */
 
-/* Red room tint: multiplied over everything (agents included), pulsing ~1.2 Hz */
+/* Dark red room tint: multiplied over everything (agents included), breathing
+   once every 1.7 s */
 .room-tint {
   position: absolute;
   inset: 0;
   z-index: 100;
   pointer-events: none;
-  background: #ff2a2a;
+  background: #c8102e;
   mix-blend-mode: multiply;
-  opacity: 0.16;
+  opacity: 0.18;
   animation: incidentPulse 0.83s ease-in-out infinite alternate;
 }
 @keyframes incidentPulse {
-  from { opacity: 0.10; }
-  to   { opacity: 0.22; }
+  from { opacity: 0.12; }
+  to   { opacity: 0.26; }
+}
+
+/* Alarm burst as the incident starts: three deep red flashes over 1.8 s
+   (1.7 a second, under the 3-a-second photosensitivity limit), then gone */
+.room-alarm {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  pointer-events: none;
+  background: #7a0012;
+  mix-blend-mode: multiply;
+  opacity: 0;
+  animation: incidentAlarm 1.8s ease-in-out 1 forwards;
+}
+@keyframes incidentAlarm {
+  0%, 33%, 66%, 100% { opacity: 0; }
+  16%, 49%, 82%      { opacity: 0.6; }
 }
 .room-container.incident {
   box-shadow: inset 0 0 40px rgba(255, 40, 40, 0.35);
@@ -202,6 +220,7 @@
   .slack-incident-dot {
     animation: none;
   }
-  .incident-beacon-sweep { display: none; }
+  .incident-beacon-sweep,
+  .room-alarm { display: none; }
   .incident-beacon img.frame-b { opacity: 0; }
 }

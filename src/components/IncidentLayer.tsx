@@ -4,7 +4,8 @@
  * Rendered as siblings inside .room-container (a fragment, not a wrapper)
  * so each piece keeps its own z-index against furniture and agents:
  *   - the "days since last incident" sign (every mode; number is live)
- *   - a red room tint that pulses (incident only)
+ *   - a red room tint that pulses (incident only), after a short dark red
+ *     alarm burst as the incident starts
  *   - a beacon above the door with a sweeping light cone (incident only)
  *   - the status screen on the wall TV (incident only)
  *   - optional slots that draw nothing until their art exists
@@ -15,7 +16,7 @@
  */
 
 import React, { useEffect, useSyncExternalStore } from 'react'
-import { useIncident, daysSinceLastIncident } from '../incident'
+import { useIncident, daysSinceLastIncident, shouldPlayAlarm } from '../incident'
 import {
   incidentAssetUrl, probeIncidentAssets, subscribeIncidentAssets, type IncidentAssetName,
 } from '../incidentAssets'
@@ -76,6 +77,10 @@ const IncidentLayer: React.FC = () => {
         <>
           {/* Red room tint — above everything incl. agents, below the boss effect */}
           <div className="room-tint" aria-hidden="true" />
+          {/* Alarm burst: three slow dark red flashes as prod goes down (keyed so each incident gets its own) */}
+          {shouldPlayAlarm(incident, Date.now()) && (
+            <div key={incident.startedAt} className="room-alarm" aria-hidden="true" />
+          )}
 
           {/* Beacon over the door: CSS light cone sweep + two alternating frames */}
           <div className="incident-beacon-sweep" style={{ left: `${DOOR_BEACON.x}%`, top: `${DOOR_BEACON.y}%` }} aria-hidden="true" />

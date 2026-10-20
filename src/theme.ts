@@ -1,6 +1,7 @@
 /** theme.ts — Office TV theme pack (characters, rooms, chatter, names, events) */
 
 import { useSyncExternalStore } from 'react'
+import { getEventMode } from './eventMode'
 import { getVariant, pickIncidentLine, type IncidentLineKind } from './incident'
 
 export type ThemeName = 'default' | 'office'
@@ -257,9 +258,9 @@ function variantLine(kind: IncidentLineKind): string | null {
   return pickIncidentLine(kind)
 }
 
-export function themedSpawn(): string  { return variantLine('spawn')  ?? pick(state.name === 'office' ? OFFICE_SPAWN  : DEFAULT_SPAWN) }
-export function themedWork(): string   { return variantLine('work')   ?? pick(state.name === 'office' ? OFFICE_WORK   : DEFAULT_WORK) }
-export function themedDone(): string   { return variantLine('done')   ?? pick(state.name === 'office' ? OFFICE_DONE   : DEFAULT_DONE) }
+export function themedSpawn(): string  { return getEventMode() === 'real' ? 'agent connected' : variantLine('spawn') ?? pick(state.name === 'office' ? OFFICE_SPAWN : DEFAULT_SPAWN) }
+export function themedWork(): string   { return getEventMode() === 'real' ? 'working' : variantLine('work') ?? pick(state.name === 'office' ? OFFICE_WORK : DEFAULT_WORK) }
+export function themedDone(): string   { return getEventMode() === 'real' ? 'agent finished; check reported results' : variantLine('done') ?? pick(state.name === 'office' ? OFFICE_DONE : DEFAULT_DONE) }
 export function themedCoffee(): string { return variantLine('coffee') ?? pick(state.name === 'office' ? OFFICE_COFFEE : DEFAULT_COFFEE) }
 export function themedWater(): string  { return variantLine('water')  ?? pick(state.name === 'office' ? OFFICE_WATER  : DEFAULT_WATER) }
 

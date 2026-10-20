@@ -404,11 +404,12 @@ function clip(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text
 }
 
-const ROOT_CAUSES_WITHOUT_FAILURES =['a Friday deploy', 'DNS. it is always DNS.', 'a config change nobody remembers', 'a null. always a null.']
+const ROOT_CAUSES_WITHOUT_FAILURES = ['not established']
 
 /** One-line "postmortem card" for the chat. `bystanders` = agents in the room when nobody's tool failed. */
 export function formatPostmortem(summary: IncidentSummary, bystanders: string[] = []): string {
-  const parts = [`📋 Postmortem ${summary.id}`, `all clear after ${formatDuration(summary.durationMs)}`]
+  const ending = summary.endedBy === 'timeout' ? 'alert expired; recovery not verified' : 'all clear'
+  const parts = [`📋 Postmortem ${summary.id}`, `${ending} after ${formatDuration(summary.durationMs)}`]
 
   if (summary.failureCount === 0) {
     parts.push('no tool failures')
@@ -427,7 +428,7 @@ export function formatPostmortem(summary: IncidentSummary, bystanders: string[] 
   const cause = (summary.cause ? clip(summary.cause, 140) : null)
     ?? summary.lastTool
     ?? ROOT_CAUSES_WITHOUT_FAILURES[summary.startedAt % ROOT_CAUSES_WITHOUT_FAILURES.length]
-  parts.push(`root cause: ${cause}`)
+  parts.push(`observed failure: ${cause}`)
 
   return parts.join(' · ')
 }
@@ -444,16 +445,16 @@ export function incidentTransitionLines(t: IncidentTransition, agentsInRoom: { n
       case 'failures': {
         const n = recentFailures(t.state.failures, t.state.startedAt ?? Date.now()).length
         const last = t.state.failures[t.state.failures.length - 1]
-        lines.push(`🔴 ${n} tool failures in 5 min — INCIDENT MODE ON. Prod is down. Everyone to the war room.${last?.label ? ` Latest: ${clip(last.label, 120)}.` : ''}`)
+        lines.push(`🔴 ${n} tool failures in 5 min — INCIDENT MODE ON. Review the observed failures.${last?.label ? ` Latest: ${clip(last.label, 120)}.` : ''}`)
         break
       }
       case 'deploy-fail': {
         const deploy = [...t.state.failures].reverse().find(f => f.tool === 'deploy')
-        lines.push(`🔴 ${deploy?.target ? `The ${deploy.target} deploy` : 'A deploy'} failed — INCIDENT MODE ON. Prod is down. Everyone to the war room.`)
+        lines.push(`🔴 ${deploy?.target ? `The ${deploy.target} deploy` : 'A deploy'} failed — INCIDENT MODE ON. Check deployment status and logs.`)
         break
       }
       case 'event':
-        lines.push('🚨 Mini-incident declared (90 s) — rollback in progress. Nobody deploys until the graph is flat.')
+        lines.push('[Emulated] Mini-incident declared (90 s).')
         break
       case 'manual':
         lines.push('🔴 INCIDENT MODE ON — declared by the boss. Everyone to the war room.')
@@ -462,7 +463,7 @@ export function incidentTransitionLines(t: IncidentTransition, agentsInRoom: { n
         lines.push('🔴 INCIDENT MODE pinned by ?variant=incident — type /all-clear to end it.')
         break
       case 'restored':
-        lines.push('🔴 Still in INCIDENT MODE from last time — type /all-clear when prod is back.')
+        lines.push('🔴 Still in INCIDENT MODE from last time — check current status; type /all-clear when resolved.')
         break
       case 'remote':
         break

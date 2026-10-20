@@ -28,6 +28,7 @@ import {
 import { BOSS_ROLE } from './config'
 import { officeHttpBase, officeWsUrl } from './serverUrl'
 import { mergeChatHistory } from './chatHistory'
+import { useEventMode, setEventMode } from './eventMode'
 import { pickEvent } from './events'
 import { getInteraction } from './interactions'
 import {
@@ -295,6 +296,8 @@ const App: React.FC = () => {
   const [dayPhase, setDayPhase] = useState<DayPhase>(getCurrentPhase())
   const [dayNightMode, setDayNightMode] = useState<'auto' | 'day' | 'night'>('auto')
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const eventMode = useEventMode(!isSimMode)
+  useEffect(() => { if (isSimMode) setEventMode('emulated') }, [])
   const closeSettings = useCallback(() => setSettingsOpen(false), [])
 
   // Compressed day cycle: 10 min = 24 hours
@@ -1214,6 +1217,7 @@ const App: React.FC = () => {
   // ---------------------------------------------------------------------------
 
   useEffect(() => {
+    if (!isSimMode && eventMode !== 'emulated') return
     // Percentage-based target positions for each event type (matching room layout)
     const EVENT_TARGETS: Record<string, { x: number; y: number }> = {
       'fire-drill': { x: 67.5, y: 48.9 },
@@ -1229,7 +1233,7 @@ const App: React.FC = () => {
       const event = pickEvent()
 
       // Post main slack announcement (system message)
-      addMsg('system', 'default', '#8b8d91', event.slackAnnouncement, true)
+      addMsg('system', 'default', '#8b8d91', `[Emulated] ${event.slackAnnouncement}`, true)
 
       // Incident mode: deploy-fail / who-broke-build start a 90 s mini-incident,
       // deploy-success ends one (the transition subscriber posts the chat lines)
@@ -1327,7 +1331,7 @@ const App: React.FC = () => {
     let timerRef = scheduleNext()
     return () => clearTimeout(timerRef)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [addMsg])
+  }, [addMsg, eventMode])
 
   // ---------------------------------------------------------------------------
   // Ambient office sounds
@@ -1456,7 +1460,7 @@ const App: React.FC = () => {
         <div className="title-bar-dot" style={{ background: '#ff5f57' }} />
         <div className="title-bar-dot" style={{ background: '#febc2e' }} />
         <div className="title-bar-dot" style={{ background: '#28c840' }} />
-        <span className="title-bar-text">{titlePrefix}{variant === 'incident' ? '🔥 PROD IS DOWN — AGENT OFFICE' : 'CLAUDE CODE — AGENT OFFICE'}</span>
+        <span className="title-bar-text">{titlePrefix}{variant === 'incident' ? '⚠ INCIDENT — AGENT OFFICE' : 'CLAUDE CODE — AGENT OFFICE'}</span>
         <SessionStrip sessions={sessions} agents={agents} />
         <button
           className="title-bar-daynight"

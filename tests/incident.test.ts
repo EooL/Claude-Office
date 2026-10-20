@@ -273,16 +273,16 @@ describe('incident mode — formatting', () => {
       cmd(T0 + 4 * MIN + 12 * SEC, 'all-clear'),
     )
     expect(formatPostmortem(t.exited!)).toBe(
-      `📋 Postmortem INC-${T0} · all clear after 4m 12s · 3 tool failures (Bash ×2, Edit ×1) · responders: Debugger · root cause: Bash`,
+      `📋 Postmortem INC-${T0} · all clear after 4m 12s · 3 tool failures (Bash ×2, Edit ×1) · responders: Debugger · observed failure: Bash`,
     )
   })
 
-  it('falls back to the agents in the room and a joke root cause when nothing failed', () => {
+  it('does not invent a root cause when nothing failed', () => {
     const t = reduceIncident(run([event(T0, 'deploy-fail')]).state, event(T0 + 90 * SEC, 'deploy-success'))
     const card = formatPostmortem(t.exited!, ['Debugger', 'Tester'])
     expect(card).toContain('no tool failures')
     expect(card).toContain('responders: Debugger, Tester')
-    expect(card).toMatch(/root cause: .+/)
+    expect(card).toContain('observed failure: not established')
     expect(formatPostmortem(t.exited!)).toContain('responders: just the boss and Claude')
   })
 
@@ -332,11 +332,11 @@ describe('incident mode — signals (what the Bash commands meant)', () => {
     expect(state.mini).toBe(false)
     expect(state.expiresAt).toBe(T0 + INCIDENT_CONFIG.autoExitMs)
     expect(transitions[0].entered).toBe('deploy-fail')
-    expect(incidentTransitionLines(transitions[0])[0]).toBe('🔴 The api deploy failed — INCIDENT MODE ON. Prod is down. Everyone to the war room.')
+    expect(incidentTransitionLines(transitions[0])[0]).toBe('🔴 The api deploy failed — INCIDENT MODE ON. Check deployment status and logs.')
 
     const over = reduceIncident(state, cmd(T0 + 2 * MIN, 'all-clear'))
     expect(over.exited).toMatchObject({ reason: 'deploy-fail', failureCount: 1, tools: { deploy: 1 }, cause: 'deploy of api failed: Error: Deployment failed: 503 from the edge' })
-    expect(formatPostmortem(over.exited!)).toContain('root cause: deploy of api failed: Error: Deployment failed: 503 from the edge')
+    expect(formatPostmortem(over.exited!)).toContain('observed failure: deploy of api failed: Error: Deployment failed: 503 from the edge')
   })
 
   it('a deploy that went out resolves it; a pinned screenshot stays on', () => {
@@ -362,7 +362,7 @@ describe('incident mode — signals (what the Bash commands meant)', () => {
     expect(state.variant).toBe('incident')
     expect(state.reason).toBe('failures')
     expect(state.failures.map(f => f.tool)).toEqual(['build', 'build', 'build'])
-    expect(incidentTransitionLines(transitions[0])[0]).toBe('🔴 3 tool failures in 5 min — INCIDENT MODE ON. Prod is down. Everyone to the war room. Latest: build failed in api: 4 errors.')
+    expect(incidentTransitionLines(transitions[0])[0]).toBe('🔴 3 tool failures in 5 min — INCIDENT MODE ON. Review the observed failures. Latest: build failed in api: 4 errors.')
   })
 
   it('a failed test run names its reason for the summary ("tests failed in api: 3 failing")', () => {

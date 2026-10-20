@@ -20,6 +20,9 @@ Agent recommendations offer **Plan recommended step**; ready plans offer **Appro
 plan**, each with a **Decline** button. Approval applies once to that specific plan, and every
 approval or refusal is written to the chat as its own line.
 
+Settings > Events defaults to **Real events**. Optional emulated office events are labeled.
+See [events and next steps](docs/events-and-next-steps.md) to connect local commands or CI results.
+
 ## Update — 1.1: the level-up
 
 > We had 12 hours and 90 % of our 20x plan still to use 😂 so I asked Claude to level up Claude Office (using Fable 5.1 <img src="docs/images/claude-crab.gif" height="36" alt="" align="absmiddle"> and <img src="docs/images/ultracode.svg" height="20" alt="ultracode" align="absmiddle">).

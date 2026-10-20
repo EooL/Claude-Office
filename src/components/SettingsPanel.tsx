@@ -27,6 +27,7 @@ import BrainsPanel from './BrainsPanel'
 import OrgChart from './OrgChart'
 import ThemedSelect from './ThemedSelect'
 import '../styles/settings.css'
+import { setEventMode, useEventMode, type EventMode } from '../eventMode'
 
 interface Service {
   name: string
@@ -75,6 +76,7 @@ const TABS = [
   { id: 'services', label: 'Services' },
   { id: 'brains', label: 'Brains' },
   { id: 'team', label: 'Team' },
+  { id: 'events', label: 'Events' },
 ] as const
 
 type Tab = (typeof TABS)[number]['id']
@@ -115,6 +117,8 @@ export default function SettingsPanel({ readOnly, open, onClose }: { readOnly: b
   const [error, setError] = useState<string | null>(null)
   const [tab, setTab] = useState<Tab>('services')
   const [brainId, setBrainId] = useState('deep')
+  const eventMode = useEventMode()
+  const [savingEvents, setSavingEvents] = useState(false)
 
   const load = useCallback(async (): Promise<BackendsResponse | null> => {
     const body = await getJson<BackendsResponse>('/backends')
@@ -303,6 +307,27 @@ export default function SettingsPanel({ readOnly, open, onClose }: { readOnly: b
         {firstRun && servicesSection}
 
         {!firstRun && tab === 'services' && servicesSection}
+
+        {!firstRun && tab === 'events' && (
+          <section className="settings-section" id="settings-panel-events" role="tabpanel" aria-labelledby="settings-tab-events">
+            <p className="backend-lead">Choose what drives office alerts.</p>
+            <label htmlFor="event-mode">Event source</label>
+            <ThemedSelect id="event-mode" value={eventMode} disabled={readOnly || savingEvents} onChange={async value => {
+              const next = value as EventMode
+              setSavingEvents(true); setError(null)
+              const result = await send('POST', '/settings', { eventMode: next })
+              if (result.ok) setEventMode(next)
+              else setError(result.error ?? 'Could not save event source.')
+              setSavingEvents(false)
+            }} options={[
+              { value: 'real', label: 'Real events (default)' },
+              { value: 'emulated', label: 'Real events + emulated office events' },
+            ]} />
+            <p className="backend-note">Real mode uses observed tool failures and test, build, push and deployment signals. It never invents deployment outcomes. CI can report authenticated signals through the Office event API; pipelines without an integration are not monitored.</p>
+            <p className="backend-note">Emulated events are labeled and add fictional office activity. Real signals remain enabled in both modes.</p>
+            {error && <p className="backend-error" role="alert">{error}</p>}
+          </section>
+        )}
 
         {!firstRun && tab === 'team' && (
           <section className="settings-section" id="settings-panel-team" role="tabpanel" aria-labelledby="settings-tab-team">

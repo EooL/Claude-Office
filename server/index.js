@@ -1333,7 +1333,7 @@ function clampCount(val, max = Number.MAX_SAFE_INTEGER) {
 const SETTINGS_FILE = join(RUNTIME_DIR, 'settings.json')
 const ANSWER_MARKER_FILE = join(RUNTIME_DIR, 'answer-permissions')
 const LOG_PROMPTS_LEVELS = new Map([['off', 0], ['summary', 200], ['full', MAX_TEXT_LEN]])
-const settings = { logPrompts: 'summary', answerPermissions: true }
+const settings = { logPrompts: 'summary', answerPermissions: true, eventMode: 'real' }
 
 function loadSettings() {
   if (!existsSync(SETTINGS_FILE)) return
@@ -1342,6 +1342,7 @@ function loadSettings() {
     if (saved && typeof saved === 'object') {
       if (LOG_PROMPTS_LEVELS.has(saved.logPrompts)) settings.logPrompts = saved.logPrompts
       if (typeof saved.answerPermissions === 'boolean') settings.answerPermissions = saved.answerPermissions
+      if (['real', 'emulated'].includes(saved.eventMode)) settings.eventMode = saved.eventMode
     }
   } catch (err) {
     console.warn('[settings] Could not read settings:', err.message)
@@ -2455,7 +2456,8 @@ app.get('/settings', (_req, res) => {
 })
 
 app.post('/settings', requireUi, (req, res) => {
-  const { logPrompts, answerPermissions } = req.body ?? {}
+  const { logPrompts, answerPermissions, eventMode } = req.body ?? {}
+  if (eventMode !== undefined && !['real', 'emulated'].includes(eventMode)) return res.status(400).json({ error: 'eventMode must be real or emulated' })
   if (logPrompts !== undefined) {
     if (typeof logPrompts !== 'string' || !LOG_PROMPTS_LEVELS.has(logPrompts)) {
       return res.status(400).json({ error: `logPrompts must be one of ${Array.from(LOG_PROMPTS_LEVELS.keys()).join(', ')}` })
@@ -2466,6 +2468,7 @@ app.post('/settings', requireUi, (req, res) => {
   }
   if (logPrompts !== undefined) settings.logPrompts = logPrompts
   if (answerPermissions !== undefined) settings.answerPermissions = answerPermissions
+  if (eventMode !== undefined) settings.eventMode = eventMode
   saveSettings()
   syncAnswerMarker()
   console.log(`[settings] logPrompts = ${settings.logPrompts}, answerPermissions = ${settings.answerPermissions}`)

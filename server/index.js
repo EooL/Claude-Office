@@ -1979,6 +1979,21 @@ app.post('/chat', (req, res) => {
   if (typeof text === 'string' && text.startsWith('/')) {
     const parts = text.split(' ')
     const cmd = parts[0]
+    // /goal sends an agent to work on the files: the page (UI token) or a token holder may say it.
+    // It is stored as a boss row of type 'goal', which is what the delegation flow trusts.
+    if (cmd === '/goal') {
+      const supplied = bearerToken(req)
+      if (!uiTokenMatches(supplied) && !tokenMatches(supplied)) {
+        const sysMsg = addMessage({ sender: 'system', text: '🔒 /goal needs the office page opened with its link (npm run open)', isSystem: true })
+        broadcast({ type: 'chat_message', ...sysMsg, isSystem: true })
+        console.warn(`[chat] Refused /goal from ${clampString(sender)}: no token`)
+        return unauthorized(res, { error: '/goal needs the office token' })
+      }
+      const row = addMessage({ sender: clampString(sender), role: 'boss', text: clampString(text, 2000), msgType: 'goal' })
+      broadcast({ type: 'chat_message', ...row })
+      console.log(`[chat] ${row.sender}: ${row.text}`)
+      return res.json({ ok: true })
+    }
     if (PRIVILEGED_COMMANDS.has(cmd) && !tokenMatches(bearerToken(req))) {
       // Tell the person in the chat panel why nothing happened (the UI ignores
       // the HTTP status), and the caller through the status
@@ -3635,6 +3650,7 @@ export function start({ port = PORT, host = readHost() } = {}) {
   }
 
   httpServer.listen(port, host, () => {
+    startCatalogueRefresh()
     writeTokenFile()
     // Tighten the runtime dir and the chat database to 0600/0700 even when an
     // installer, a start script or an older build created them world-readable

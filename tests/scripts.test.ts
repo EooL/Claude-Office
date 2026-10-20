@@ -25,13 +25,16 @@ const CHAT_POST = join(SCRIPTS, 'chat-post.py')
 
 const LOG_ARGS = `python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "$@"`
 
-// Fake `claude`: logs every call (one JSON array per line) and its pid,
+// Fake `claude`, as server/adapters.mjs runs it: the prompt arrives on stdin and a JSON result goes to
+// stdout (`-p --output-format json ...`). It logs every call (one JSON array per line, the prompt put
+// second as when it was an argument) and its pid,
 // thinks for $FAKE_CLAUDE_DIR/delay seconds when that file exists (writing
 // the pid of its `sleep` too), then answers from $FAKE_CLAUDE_DIR/mode — "ok"
 // prints a reply, "empty" fails like a CLI that is not logged in.
 const FAKE_CLAUDE = `
 dir="\${FAKE_CLAUDE_DIR:?}"
-${LOG_ARGS} >> "$dir/calls.jsonl"
+prompt=$(cat)
+printf '%s' "$prompt" | python3 -c 'import json,sys; a=sys.argv[1:]; print(json.dumps([a[0], sys.stdin.read()] + a[1:]))' "$@" >> "$dir/calls.jsonl"
 echo $$ >> "$dir/claude.pids"
 delay=$(cat "$dir/delay" 2>/dev/null || echo 0)
 if [ "$delay" != 0 ]; then
@@ -42,7 +45,8 @@ fi
 mode=$(cat "$dir/mode" 2>/dev/null || echo ok)
 case "$mode" in
   empty) echo "Not logged in · Please run /login" >&2; exit 1 ;;
-  *) echo "On it, checking the error logs now" ;;
+  recommend) echo '{"type":"result","is_error":false,"result":"The permissions gap needs a focused check.\\nNEXT_ACTION: Investigate the OpenCode chat permissions in a disposable checkout before enabling write operations.","usage":{"input_tokens":1,"output_tokens":1}}' ;;
+  *) echo '{"type":"result","is_error":false,"result":"On it, checking the error logs now","total_cost_usd":0,"usage":{"input_tokens":1,"output_tokens":1}}' ;;
 esac`
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
@@ -88,6 +92,15 @@ class Proc {
   get pid() { return this.child.pid! }
   /** SIGTERM the whole process group (the script and its curl/sleep children). */
   async stop() {
+    if (process.platform === 'win32') {
+      // Killing only the Git Bash launcher leaves the shell and its polling children alive.
+      await new Promise<void>(resolve => {
+        const killer = spawn('taskkill', ['/PID', String(this.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
+        killer.once('error', () => resolve())
+        killer.once('exit', () => resolve())
+      })
+      return
+    }
     try { process.kill(-this.pid, 'SIGTERM') } catch {}
     try { this.child.kill('SIGTERM') } catch {}
     await Promise.race([this.exited, sleep(3000)])
@@ -144,6 +157,8 @@ async function startWatcher(opts: { maxPerMinute?: number; staleLock?: boolean; 
     AGENT_OFFICE_HOME: office.dir,
     AGENT_OFFICE_PORT: String(port),
     PATH: `${bin}:${process.env.PATH}`,
+    // The adapter would run the real claude it finds on PATH; this points it at the fake (a bash script, so run by bash)
+    AGENT_OFFICE_BIN_CLAUDE: `bash ${join(bin, 'claude').replaceAll('\\', '/')}`,
     FAKE_CLAUDE_DIR: claudeDir,
     CHAT_AI_POLL_INTERVAL: '0.2',
     CHAT_AI_MAX_REPLIES_PER_MIN: String(opts.maxPerMinute ?? 50),
@@ -204,8 +219,8 @@ describe('chat-ai-watcher.sh', () => {
     expect(args[args.indexOf('--name') + 1]).toBe('agent-office-bot')
 
     // Its own reply is behind the watermark, not ahead of it
-    const lastTs = Number(readFileSync(join(w.office.dir, 'chat-ai-last-ts'), 'utf8'))
-    expect(lastTs).toBeGreaterThanOrEqual(reply!.timestamp)
+    // (the poll that moves it past the reply comes a little after the reply: wait for it rather than guess how long)
+    await waitFor('the watermark to move past the reply', () => Number(readFileSync(join(w.office.dir, 'chat-ai-last-ts'), 'utf8')) >= reply!.timestamp)
   })
 
   it("ignores the server's starting:/done: announcements and directed agent-to-agent messages", async () => {
@@ -267,6 +282,39 @@ describe('chat-ai-watcher.sh', () => {
   })
 })
 
+describe('chat-ai-watcher.sh follow-up recommendations', () => {
+  let w: WatcherWorld
+  beforeAll(async () => { w = await startWatcher(); writeFileSync(join(w.claudeDir, 'mode'), 'recommend') })
+  afterAll(async () => { await w.watcher.stop(); removeOffice(w.office) })
+  it('preserves a complete separate recommendation line and offers a planning approval', async () => {
+    await say(w, 'What remains uncertain?')
+    const reply = await waitFor('a recommendation', async () => (await chat(w)).find(m => m.text.includes('NEXT_ACTION:')))
+    expect(reply.text).toContain('\nNEXT_ACTION: Investigate the OpenCode chat permissions in a disposable checkout before enabling write operations.')
+    expect(claudeCalls(w)[0][1]).toContain('NEXT_ACTION:')
+    const actions = await request(w.office.server.app).get('/chat/actions').set('Authorization', `Bearer ${w.office.server.AUTH_TOKEN}`)
+    expect(actions.body.actions[0]).toMatchObject({ messageId: reply.id, kind: 'plan', label: 'Plan recommended step' })
+  })
+})
+
+describe('chat-ai-watcher.sh approved goal', () => {
+  let w: WatcherWorld
+  beforeAll(async () => { w = await startWatcher() })
+  afterAll(async () => { await w.watcher.stop(); removeOffice(w.office) })
+
+  it('launches the detached execution worker from a token-authorized /goal chat row', async () => {
+    const stateFile = join(w.office.dir, 'delegation.json')
+    writeFileSync(stateFile, JSON.stringify({ plan: { name: 'Debugger', role: 'debugger', task: 'fixture task', plan: '- inspect the fixture', goal: 'complete the fixture', at: Date.now() } }))
+    expect((await postAuthed(w.office.server, '/chat', { sender: 'Boss', text: '/goal' })).status).toBe(200)
+    await waitForWithin('the completed goal worker', () => {
+      const state = JSON.parse(readFileSync(stateFile, 'utf8'))
+      return state.lastJob?.status === 'finished' && state.lastJob?.phase === 'write'
+    }, 20_000)
+    expect(claudeCalls(w)).toHaveLength(1)
+    expect(claudeCalls(w)[0]).toEqual(expect.arrayContaining(['--permission-mode', 'acceptEdits']))
+    expect(w.watcher.out).not.toContain('MODULE_NOT_FOUND')
+  }, 25_000)
+})
+
 describe('chat-ai-watcher.sh lock', () => {
   let w: WatcherWorld
   beforeAll(async () => { w = await startWatcher({ staleLock: true }) })
@@ -283,7 +331,7 @@ describe('chat-ai-watcher.sh lock', () => {
     await say(w, 'there is a bug in checkout')
     await waitFor('the empty-reply log line', () => w.watcher.out.includes('Empty reply from claude'))
     expect(claudeCalls(w)).toHaveLength(1)
-    expect(w.watcher.out).toContain('claude: Not logged in')
+    await waitFor('the login failure detail', () => w.watcher.out.includes('claude: Not logged in'))
     // The watcher prints the empty-reply line inside do_reply and removes the
     // lock when it returns, so the log line can arrive a few ms before the
     // file is gone: wait for the release rather than asserting it at once
@@ -292,8 +340,10 @@ describe('chat-ai-watcher.sh lock', () => {
 
     // ...and the next message is answered once the CLI works again
     writeFileSync(join(w.claudeDir, 'mode'), 'ok')
+    // A failed login is now remembered by the brain; simulate Settings > Try now after signing in.
+    rmSync(join(w.office.dir, 'cooldowns.json'), { force: true })
     await say(w, 'still a bug in checkout')
-    await waitFor('the Debugger reply', async () => (await chat(w)).find(m => m.sender === 'Debugger'))
+    await waitFor('the Debugger reply', async () => (await chat(w)).find(m => m.sender === 'Debugger' && m.text === FAKE_REPLY))
     expect(claudeCalls(w)).toHaveLength(2)
     await waitFor('the lock to be released', () => !existsSync(lock))
     expect(w.watcher.out).not.toContain('already generating a reply')

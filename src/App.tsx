@@ -8,9 +8,10 @@ import Character from './components/Character'
 import FurnitureRenderer from './components/FurnitureRenderer'
 import SessionStrip from './components/SessionStrip'
 import Meters from './components/Meters'
+import SettingsPanel from './components/SettingsPanel'
 import AgentCard from './components/AgentCard'
 import PermissionCards from './components/PermissionCard'
-import { isPermissionEvent, reducePermissions, setUiToken, type PermissionAction, type PermissionCardState } from './permissions'
+import { isPermissionEvent, reducePermissions, setUiToken, getUiToken, type PermissionAction, type PermissionCardState } from './permissions'
 import StatusStrip from './components/StatusStrip'
 import { Agent, AGENT_CONFIGS } from './types'
 import { getCurrentPhase, getPhaseLabel, type DayPhase } from './daylight'
@@ -292,6 +293,8 @@ const App: React.FC = () => {
   const [muted, setMuted] = useState(false)
   const [dayPhase, setDayPhase] = useState<DayPhase>(getCurrentPhase())
   const [dayNightMode, setDayNightMode] = useState<'auto' | 'day' | 'night'>('auto')
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const closeSettings = useCallback(() => setSettingsOpen(false), [])
 
   // Compressed day cycle: 10 min = 24 hours
   // nightOpacity: 0 = full day, 1 = full night
@@ -1383,9 +1386,11 @@ const App: React.FC = () => {
     // Send to server so Claude can read it. ?sim / ?video scripts stay local:
     // their scripted prompts must not reach chat.db or the AI watcher (C36).
     if (isSimMode) return
+    // /goal sends an agent to work on the files, so the server wants the page's UI token for it
+    const uiToken = getUiToken()
     fetch(`${officeHttpBase()}/chat`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(uiToken && /^\s*\/goal\b/i.test(text) ? { Authorization: `Bearer ${uiToken}` } : {}) },
       body: JSON.stringify({ sender: bossCfg.title, text }),
     }).catch(() => {})
   }, [addMsg])
@@ -1444,6 +1449,14 @@ const App: React.FC = () => {
           {dayNightMode === 'auto' ? 'AUTO' : dayNightMode === 'day' ? 'DAY' : 'NIGHT'}
         </button>
         <span className="title-bar-phase">{getPhaseLabel(effectivePhase)}</span>
+        {!isSimMode && (
+          <button className="title-bar-settings" onClick={() => setSettingsOpen(true)} title="Settings" aria-label="Settings">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
+            </svg>
+          </button>
+        )}
       </div>
 
       <div className="app-body">
@@ -1588,6 +1601,7 @@ const App: React.FC = () => {
       </div>
       </div>
       <StatusStrip office={officeRef} sessions={sessions} readOnly={readOnly} />
+      {!isSimMode && <SettingsPanel readOnly={readOnly} open={settingsOpen} onClose={closeSettings} />}
     </div>
   )
 }

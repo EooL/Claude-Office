@@ -49,7 +49,7 @@ function payrollTip(sessions: SessionStatus[], costToday: number, dollarsPerMin:
     `today $${costToday.toFixed(4)} · +${lines} / -${removed} lines · estimated at list price`,
     ...sessions.slice(0, MAX_ROWS).map(s => isEstimated(s)
       ? `${sessionLabel(s)}: needs the status line (${STATUS_LINE_INSTALL})`
-      : `${sessionLabel(s)}: $${s.cost.toFixed(4)} · ${modelLabel(s)} · ${formatDuration(s.durationMs)}`),
+      : `${sessionLabel(s)}: ${s.usageReported && !s.usageReported.includes('costUsd') ? 'cost not reported' : '$' + s.cost.toFixed(4)} · ${modelLabel(s)} · ${formatDuration(s.durationMs)}`),
   ]
 }
 
@@ -191,7 +191,7 @@ const Meters: React.FC<MetersProps> = ({ onNotice }) => {
                 <span className="ms-model">{modelLabel(s)}</span>
                 <span className="ms-bar"><span className="ms-bar-fill" style={{ width: `${Math.min(100, s.context.used ?? 0)}%` }} /></span>
                 <span className="ms-pct">{est ? formatMemory(s) : pct(s.context.used)}{est && <span className="ms-est">{est}</span>}</span>
-                {est
+                {est || (s.usageReported && !s.usageReported.includes('costUsd'))
                   ? <span className="ms-cost ms-cost-none">–</span>
                   : <span className="ms-cost">{formatMoney(s.cost)}</span>}
               </div>

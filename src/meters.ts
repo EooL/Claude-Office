@@ -85,6 +85,8 @@ export interface SessionStatus {
   model?: string
   modelId?: string
   cost: number
+  /** Usage fields actually measured by an adapter; absent for legacy status-line reports. */
+  usageReported?: string[]
   durationMs: number
   apiDurationMs?: number
   linesAdded: number

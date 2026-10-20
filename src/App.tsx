@@ -27,6 +27,7 @@ import {
 } from './officeReducer'
 import { BOSS_ROLE } from './config'
 import { officeHttpBase, officeWsUrl } from './serverUrl'
+import { mergeChatHistory } from './chatHistory'
 import { pickEvent } from './events'
 import { getInteraction } from './interactions'
 import {
@@ -452,7 +453,7 @@ const App: React.FC = () => {
     id?: number,
     tag?: 'prompt' | 'reply',
   ) => {
-    setMessages(prev => [...prev.slice(-50), {
+    setMessages(prev => [...(id !== undefined ? prev.filter(m => m.id !== id) : prev).slice(-49), {
       id: id ?? makeMsgId(),
       sender,
       senderSprite: role,
@@ -704,7 +705,25 @@ const App: React.FC = () => {
   // WebSocket connection
   // ---------------------------------------------------------------------------
 
-  const { sessions, trusted } = useAgentSocket({ onEvent: handleEvent, url: officeWsUrl(), disabled: isSimMode })
+  const { sessions, trusted, connected } = useAgentSocket({ onEvent: handleEvent, url: officeWsUrl(), disabled: isSimMode })
+  useEffect(() => {
+    if (isSimMode || !connected) return
+    const controller = new AbortController()
+    void fetch(`${officeHttpBase()}/chat`, { signal: controller.signal }).then(r => r.ok ? r.json() : null).then(data => {
+      if (!Array.isArray(data?.messages) || controller.signal.aborted) return
+      const saved: ChatMessage[] = data.messages.map((row: { id: number; sender: string; role: string; text: string; timestamp: number; is_system?: boolean; reactions?: string }) => {
+        const role = row.sender.toLowerCase() === (AGENT_CONFIGS[BOSS_ROLE]?.title ?? 'Boss').toLowerCase() ? BOSS_ROLE : row.role || 'default'
+        const cfg = AGENT_CONFIGS[role] ?? AGENT_CONFIGS['default']
+        let reactions: string[] = []
+        try { reactions = JSON.parse(row.reactions ?? '[]') } catch {}
+        return { id: row.id, sender: row.sender, senderSprite: role, senderColor: cfg.color, text: row.text, channel: 'office-general',
+          timestamp: new Date(row.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
+          isSystem: !!row.is_system, reactions, avatarSrc: getAvatarSrc(role), displayName: themedDisplayName(role, row.sender) }
+      })
+      setMessages(prev => mergeChatHistory(prev, saved))
+    }).catch(() => {})
+    return () => controller.abort()
+  }, [connected])
   // The server showed this page the office read-only: no office token, or a
   // stale one (src/officeToken.ts). The cards and the chat stop offering
   // answers the server would refuse, and the status strip says how to fix it.
@@ -1586,6 +1605,7 @@ const App: React.FC = () => {
       <Meters onNotice={text => addMsg('system', 'default', '#8b8d91', text, true)} />
       <SlackChat
         messages={messages}
+        activeAgentCount={agents.filter(agent => agent.state !== 'completed').length}
         muted={muted}
         volume={volume}
         onToggleMute={handleToggleMute}

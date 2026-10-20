@@ -14,6 +14,12 @@ with a switch in Settings > Services (off by default).
 See [delegation and circuit breakers](docs/delegation-and-circuit-breakers.md) for permissions,
 fallback configuration, diagnostics and verification limits.
 
+Chat supports clickable web and file links, an authenticated local file reader, and inline image
+previews with click-to-enlarge. Recent chat messages are restored when the page reconnects.
+Agent recommendations offer **Plan recommended step**; ready plans offer **Approve and execute
+plan**, each with a **Decline** button. Approval applies once to that specific plan, and every
+approval or refusal is written to the chat as its own line.
+
 ## Update — 1.1: the level-up
 
 > We had 12 hours and 90 % of our 20x plan still to use 😂 so I asked Claude to level up Claude Office (using Fable 5.1 <img src="docs/images/claude-crab.gif" height="36" alt="" align="absmiddle"> and <img src="docs/images/ultracode.svg" height="20" alt="ultracode" align="absmiddle">).

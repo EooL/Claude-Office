@@ -4,6 +4,8 @@ import { getSpritePath, useTheme, toggleTheme, getTheme, themedDisplayName } fro
 import IncidentBadge from './IncidentBadge'
 import { postSetting } from '../permissions'
 import { officeHttpBase } from '../serverUrl'
+import ChatContent from './ChatContent'
+import ChatActions, { useChatActions } from './ChatActions'
 
 export function getAvatarSrc(role: string, agentId?: string): string {
   const charBase = ROLE_TO_CHAR[role] ?? 'employee-3'
@@ -54,6 +56,8 @@ function logPromptsHint(level: string): string {
 
 interface SlackChatProps {
   messages: ChatMessage[]
+  /** Current office roster, independent of who spoke in chat. */
+  activeAgentCount: number
   muted: boolean
   volume: number
   onToggleMute: () => void
@@ -71,8 +75,9 @@ interface SlackChatProps {
   readOnly?: boolean
 }
 
-const SlackChat: React.FC<SlackChatProps> = ({ messages, muted, volume, onToggleMute, onVolumeChange, onSendMessage, onReaction, autoTypeText, dayPhase, typingUser, lastSeenId, readOnly = false }) => {
+const SlackChat: React.FC<SlackChatProps> = ({ messages, activeAgentCount, muted, volume, onToggleMute, onVolumeChange, onSendMessage, onReaction, autoTypeText, dayPhase, typingUser, lastSeenId, readOnly = false }) => {
   const theme = useTheme()
+  const nextActions = useChatActions(readOnly, messages[messages.length - 1]?.id ?? 0)
   void theme // Why: subscribe so avatars re-render when /the-office toggles
   const bodyRef = useRef<HTMLDivElement>(null)
   const [inputText, setInputText] = useState('')
@@ -180,7 +185,6 @@ const SlackChat: React.FC<SlackChatProps> = ({ messages, muted, volume, onToggle
   }, [messages, typingUser])
 
   const displayed = messages.slice(-12)
-  const onlineCount = new Set(messages.slice(-20).filter(m => !m.isSystem).map(m => m.sender)).size
 
   return (
     <div className="slack-panel">
@@ -189,7 +193,7 @@ const SlackChat: React.FC<SlackChatProps> = ({ messages, muted, volume, onToggle
         <span className="slack-channel-name">office-general</span>
         <div className="slack-header-right">
           <div className="slack-online-dot" />
-          <span className="slack-online-count">{onlineCount}</span>
+          <span className="slack-online-count" aria-label={`${activeAgentCount} active agents in the office`} title="Active agents currently in the office, including the Boss">{activeAgentCount}</span>
           <div
             className={`slack-cron-toggle ${cronPaused ? 'paused' : 'active'}`}
             onClick={toggleCron}
@@ -278,7 +282,8 @@ const SlackChat: React.FC<SlackChatProps> = ({ messages, muted, volume, onToggle
                     </div>
                   )}
                   <div className={`slack-msg-text${msg.isSystem ? ' slack-system-text' : ''}`}>
-                    {msg.text}
+                    <ChatContent text={msg.text.replace(/^\/goal --plan-id=[a-f0-9]{64}$/, 'Approved the displayed plan.').replace(/^NEXT_ACTION:[ \t]*/gm, 'Suggested next step: ')} messageId={msg.id} readOnly={readOnly} />
+                    <ChatActions actions={nextActions.filter(action => action.messageId === msg.id)} />
                   </div>
                   {msg.reactions && msg.reactions.length > 0 && (
                     <div className="slack-reactions">

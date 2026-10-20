@@ -34,6 +34,10 @@ import { mountRegistry } from './sessions.js'
 import { mountTasks } from './tasks.js'
 import { mountPermissions, sanitiseSuggestions, redactPermission } from './permissions.js'
 import { mountHealth, readVersion } from './health.js'
+import { mountBackends } from './backends.js'
+import { mountBrains, refreshCatalogueSoon, startCatalogueRefresh } from './brainRoutes.js'
+import { mountArtifacts } from './artifacts.js'
+import { mountChatActions } from './chat-actions.mjs'
 import { readPort, readUiPort, readHost, loadOfficeConfig, bossFromConfig } from './config.js'
 import { agentTranscriptPath, readTranscript, isTranscriptPath, clampLine } from './transcript.js'
 
@@ -1715,6 +1719,26 @@ const tasks = mountTasks(app, {
  * Open, like GET /health: nothing here that http://127.0.0.1:<port>/ does
  * not already show.
  */
+mountBackends(app, { requireUi, onServicesChanged: () => refreshCatalogueSoon() })
+mountBrains(app, { requireUi })
+mountArtifacts(app, { requireUi, getMessage: id => db.prepare('SELECT text, msg_type FROM messages WHERE id = ?').get(id) })
+mountChatActions(app, {
+  db, requireUi,
+  readState: () => { try { return JSON.parse(readFileSync(join(RUNTIME_DIR, 'delegation.json'), 'utf8')) } catch { return {} } },
+  paused: () => { try { return JSON.parse(readFileSync(join(RUNTIME_DIR, 'chat-poll-state'), 'utf8')).paused === true } catch { return false } },
+  enqueue: (text, msgType) => {
+    const row = addMessage({ sender: 'Boss', role: msgType === 'goal' ? 'boss' : 'default', text, msgType })
+    broadcast({ type: 'chat_message', ...row })
+    return row
+  },
+  // a decision on a proposed step (approved or declined) stays in the chat history as a line of its own
+  log: text => {
+    // a system line: the page ignores the server's echo of a Boss row (it posts those itself), so it would not show
+    const row = addMessage({ sender: 'system', text, isSystem: true, msgType: 'decision' })
+    broadcast({ type: 'chat_message', ...row, isSystem: true })
+  },
+})
+
 app.get('/config', (_req, res) => {
   const { config, file } = loadOfficeConfig(CONFIG_DIR)
   const address = httpServer.address()

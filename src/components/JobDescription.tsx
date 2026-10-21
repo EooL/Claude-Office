@@ -11,6 +11,7 @@ import { officeHttpBase } from '../serverUrl'
 import { getUiToken } from '../permissions'
 import { lineDiff, lineOffset, markdownToBlocks, problemText, type Block, type ProfileProblem } from '../jobDescription'
 import { getAvatarSrc } from './SlackChat'
+import ResilientImg from './ResilientImg'
 import '../styles/job-description.css'
 
 export interface ProfileSummary { role: string; displayName: string; status: string }
@@ -77,7 +78,7 @@ export function CvShell({ portrait, name, roleId, headline, chips, extras, actio
     <div className="cv">
       {/* sticky: stays visible while the sections scroll in .org-right */}
       <header className="cv-head is-sticky">
-        {typeof portrait === 'string' ? <img className="cv-portrait" src={portrait} alt={name} width={56} height={56} /> : portrait}
+        {typeof portrait === 'string' ? <ResilientImg className="cv-portrait" src={portrait} alt={name} width={56} height={56} /> : portrait}
         <div className="cv-id">
           <div className="cv-titlerow">
             <h3 className="cv-name">{name}{roleId && <code className="cv-role">{roleId}</code>}</h3>

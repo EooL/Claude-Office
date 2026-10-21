@@ -28,7 +28,9 @@ const cv = (readOnly: boolean, selected: string, job?: object) =>
 
 it('an agent CV shows portrait, name, status, relations, sidebar blocks and all six sections at once', () => {
   const html = cv(false, 'debugger', { profile: profile() })
-  expect(html).toMatch(/<img class="cv-portrait" src="[^"]+\.png"[^>]*alt="Debugger"/)
+  const portrait = /<img [^>]*class="cv-portrait"[^>]*>/.exec(html)?.[0] ?? '' // attribute order is not part of the contract
+  expect(portrait).toMatch(/src="[^"]+\.png"/)
+  expect(portrait).toContain('alt="Debugger"')
   expect(html).toContain('Finds the root cause of a bug.')
   expect(html).toContain('jd-status is-draft')
   expect(html).toMatch(/Reports to:<\/span> <button type="button" class="brain-link cv-person">Architect<\/button>/)

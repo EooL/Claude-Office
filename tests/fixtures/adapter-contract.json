@@ -1,0 +1,314 @@
+{
+ "claude chat": {
+  "argv": [
+   "-p",
+   "--output-format",
+   "json",
+   "--model",
+   "test-model",
+   "--max-turns",
+   "1",
+   "--safe-mode",
+   "--strict-mcp-config",
+   "--tools",
+   "",
+   "--no-session-persistence",
+   "--name",
+   "agent-office-bot"
+  ],
+  "stdin": "<PROMPT>",
+  "permission": null
+ },
+ "claude plan": {
+  "argv": [
+   "-p",
+   "--output-format",
+   "json",
+   "--model",
+   "test-model",
+   "--safe-mode",
+   "--permission-mode",
+   "plan",
+   "--no-session-persistence",
+   "--name",
+   "agent-office-bot"
+  ],
+  "stdin": "<PROMPT>",
+  "permission": null
+ },
+ "claude write": {
+  "argv": [
+   "-p",
+   "--output-format",
+   "json",
+   "--model",
+   "test-model",
+   "--permission-mode",
+   "acceptEdits"
+  ],
+  "stdin": "<PROMPT>",
+  "permission": null
+ },
+ "claude write+fullAccess": {
+  "argv": [
+   "-p",
+   "--output-format",
+   "json",
+   "--model",
+   "test-model",
+   "--permission-mode",
+   "acceptEdits"
+  ],
+  "stdin": "<PROMPT>",
+  "permission": null
+ },
+ "codex chat": {
+  "argv": [
+   "exec",
+   "--skip-git-repo-check",
+   "-s",
+   "read-only",
+   "--ephemeral",
+   "--json",
+   "-m",
+   "test-model",
+   "-o",
+   "C:\\Users\\iulia\\AppData\\Local\\Temp\\<OUTFILE>",
+   "-"
+  ],
+  "stdin": "<PROMPT>",
+  "permission": null
+ },
+ "codex plan": {
+  "argv": [
+   "exec",
+   "--skip-git-repo-check",
+   "-s",
+   "read-only",
+   "--ephemeral",
+   "--json",
+   "-m",
+   "test-model",
+   "-o",
+   "C:\\Users\\iulia\\AppData\\Local\\Temp\\<OUTFILE>",
+   "-"
+  ],
+  "stdin": "<PROMPT>",
+  "permission": null
+ },
+ "codex write": {
+  "argv": [
+   "exec",
+   "--skip-git-repo-check",
+   "-s",
+   "workspace-write",
+   "--json",
+   "-m",
+   "test-model",
+   "-o",
+   "C:\\Users\\iulia\\AppData\\Local\\Temp\\<OUTFILE>",
+   "-"
+  ],
+  "stdin": "<PROMPT>",
+  "permission": null
+ },
+ "codex write+fullAccess": {
+  "argv": [
+   "exec",
+   "--skip-git-repo-check",
+   "-s",
+   "workspace-write",
+   "--json",
+   "-m",
+   "test-model",
+   "-o",
+   "C:\\Users\\iulia\\AppData\\Local\\Temp\\<OUTFILE>",
+   "-"
+  ],
+  "stdin": "<PROMPT>",
+  "permission": null
+ },
+ "agy chat": {
+  "argv": [
+   "-p",
+   "<PROMPT>\n\nUse only your file read, list and search tools. Do not run shell commands and do not edit files.",
+   "--output-format",
+   "json",
+   "--model",
+   "test-model",
+   "--mode",
+   "plan"
+  ],
+  "stdin": "",
+  "permission": null
+ },
+ "agy plan": {
+  "argv": [
+   "-p",
+   "<PROMPT>\n\nUse only your file read, list and search tools. Do not run shell commands and do not edit files.",
+   "--output-format",
+   "json",
+   "--model",
+   "test-model",
+   "--mode",
+   "plan"
+  ],
+  "stdin": "",
+  "permission": null
+ },
+ "agy write": {
+  "argv": [
+   "-p",
+   "<PROMPT>\n\nUse your file read and edit tools. Do not run shell commands.",
+   "--output-format",
+   "json",
+   "--model",
+   "test-model",
+   "--mode",
+   "accept-edits"
+  ],
+  "stdin": "",
+  "permission": null
+ },
+ "agy write+fullAccess": {
+  "argv": [
+   "-p",
+   "<PROMPT>",
+   "--output-format",
+   "json",
+   "--model",
+   "test-model",
+   "--mode",
+   "accept-edits",
+   "--dangerously-skip-permissions"
+  ],
+  "stdin": "",
+  "permission": null
+ },
+ "opencode chat": {
+  "argv": [
+   "run",
+   "--format",
+   "json",
+   "-m",
+   "test-model",
+   "--dir",
+   "<CWD>",
+   "<PROMPT>"
+  ],
+  "stdin": "",
+  "permission": {
+   "*": "deny",
+   "read": "allow",
+   "glob": "allow",
+   "grep": "allow",
+   "list": "allow"
+  }
+ },
+ "opencode plan": {
+  "argv": [
+   "run",
+   "--format",
+   "json",
+   "-m",
+   "test-model",
+   "--dir",
+   "<CWD>",
+   "--agent",
+   "plan",
+   "<PROMPT>"
+  ],
+  "stdin": "",
+  "permission": {
+   "*": "deny",
+   "read": "allow",
+   "glob": "allow",
+   "grep": "allow",
+   "list": "allow"
+  }
+ },
+ "opencode write": {
+  "argv": [
+   "run",
+   "--format",
+   "json",
+   "-m",
+   "test-model",
+   "--dir",
+   "<CWD>",
+   "<PROMPT>"
+  ],
+  "stdin": "",
+  "permission": null
+ },
+ "opencode write+fullAccess": {
+  "argv": [
+   "run",
+   "--format",
+   "json",
+   "-m",
+   "test-model",
+   "--dir",
+   "<CWD>",
+   "<PROMPT>"
+  ],
+  "stdin": "",
+  "permission": null
+ },
+ "qoder chat": {
+  "argv": [
+   "-p",
+   "-o",
+   "json",
+   "-m",
+   "test-model",
+   "--permission-mode",
+   "dont_ask",
+   "<PROMPT>"
+  ],
+  "stdin": "",
+  "permission": null
+ },
+ "qoder plan": {
+  "argv": [
+   "-p",
+   "-o",
+   "json",
+   "-m",
+   "test-model",
+   "--permission-mode",
+   "dont_ask",
+   "<PROMPT>"
+  ],
+  "stdin": "",
+  "permission": null
+ },
+ "qoder write": {
+  "argv": [
+   "-p",
+   "-o",
+   "json",
+   "-m",
+   "test-model",
+   "--permission-mode",
+   "accept_edits",
+   "<PROMPT>"
+  ],
+  "stdin": "",
+  "permission": null
+ },
+ "qoder write+fullAccess": {
+  "argv": [
+   "-p",
+   "-o",
+   "json",
+   "-m",
+   "test-model",
+   "--permission-mode",
+   "accept_edits",
+   "<PROMPT>"
+  ],
+  "stdin": "",
+  "permission": null
+ }
+}

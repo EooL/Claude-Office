@@ -85,6 +85,8 @@ export interface SessionStatus {
   model?: string
   modelId?: string
   cost: number
+  /** Usage fields actually measured by an adapter; absent for legacy status-line reports. */
+  usageReported?: string[]
   durationMs: number
   apiDurationMs?: number
   linesAdded: number
@@ -234,6 +236,16 @@ export function formatMoney(usd: number): string {
   if (usd < 0.1) return `$${usd.toFixed(3)}`
   if (usd < 1000) return `$${usd.toFixed(2)}`
   return `$${Math.round(usd).toLocaleString('en-US')}`
+}
+
+/** Legacy status-line reports measure cost; adapter reports name measured fields. */
+export function hasMeasuredCost(s: SessionStatus): boolean {
+  return !isEstimated(s) && (!s.usageReported || s.usageReported.includes('costUsd'))
+}
+
+export function payrollCoverage(sessions: SessionStatus[]): 'none' | 'partial' | 'complete' {
+  const measured = sessions.filter(hasMeasuredCost).length
+  return measured === 0 ? 'none' : measured === sessions.length ? 'complete' : 'partial'
 }
 
 export function formatTokens(n: number): string {

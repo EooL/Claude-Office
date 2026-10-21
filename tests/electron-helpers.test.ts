@@ -14,11 +14,17 @@ import request from 'supertest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { renderIcons, TRAY_GLYPH, APP_GLYPH } from '../scripts/generate-icons.mjs'
 import { loadOffice, removeOffice } from './helpers'
+import { loaded } from './fixtures/crlf-shebang.mjs'
 
 const require = createRequire(import.meta.url)
 const h = require('../electron/helpers.cjs')
 
 const ROOT = join(__dirname, '..')
+
+it('imports a CLI module with a CRLF hashbang through the Vitest SSR loader', () => {
+  expect(readFileSync(join(ROOT, 'tests/fixtures/crlf-shebang.mjs'), 'utf8')).toMatch(/^#![^\n]*\r\n/)
+  expect(loaded).toBe('CRLF CLI loaded')
+})
 
 // A 1920×1080 display with a 40px taskbar at the bottom
 const WORK_AREA = { x: 0, y: 0, width: 1920, height: 1040 }

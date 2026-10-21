@@ -120,16 +120,22 @@ export function scriptPathIn(command, name) {
 
 /** ~ and $HOME as a shell would expand them in a hook command */
 function expandHome(p, home) {
+  if (process.platform === 'win32') p = p.replace(/^\/([a-z])\//i, '$1:/')
   if (p === '~') return home
   if (p.startsWith('~/')) return join(home, p.slice(2))
   return p.replace(/^\$\{?HOME\}?(?=\/|$)/, home)
 }
 
 function samePath(a, b) {
+  // Git Bash records drive paths as /c/...; Node on Windows needs C:/....
+  const nativePath = p => process.platform === 'win32' ? p.replace(/^\/([a-z])\//i, '$1:/') : p
+  a = nativePath(a)
+  b = nativePath(b)
+  const comparable = p => process.platform === 'win32' ? p.toLowerCase() : p
   try {
-    return realpathSync(a) === realpathSync(b)
+    return comparable(realpathSync(a)) === comparable(realpathSync(b))
   } catch {
-    return resolve(a) === resolve(b)
+    return comparable(resolve(a)) === comparable(resolve(b))
   }
 }
 
@@ -137,11 +143,14 @@ function samePath(a, b) {
 export function which(name, path = process.env.PATH ?? '') {
   for (const dir of path.split(delimiter)) {
     if (!dir) continue
-    const candidate = join(dir, name)
-    try {
-      accessSync(candidate, constants.X_OK)
-      if (statSync(candidate).isFile()) return candidate
-    } catch {}
+    const names = process.platform === 'win32' ? [name, `${name}.exe`, `${name}.cmd`, `${name}.bat`] : [name]
+    for (const executable of names) {
+      const candidate = join(dir, executable)
+      try {
+        accessSync(candidate, constants.X_OK)
+        if (statSync(candidate).isFile()) return candidate
+      } catch {}
+    }
   }
   return null
 }
@@ -404,6 +413,9 @@ export function checkToken({ officeHome, serverUp }) {
     mode = statSync(file).mode & 0o777
   } catch (err) {
     return result(FAIL, `token: ${file} cannot be read (${err instanceof Error ? err.message : err})`)
+  }
+  if (process.platform === 'win32') {
+    return result(WARN, `token: ${file} (Windows ACL permissions not verified)`, 'Windows stat modes do not describe ACL access; verify that only your account can read this token')
   }
   if (mode & 0o077) {
     return result(FAIL, `token: ${file} is mode 0${mode.toString(8)} — anyone on this machine can post as an agent`, `chmod 600 "${file}" (the server also rewrites it 0600 when it starts)`)

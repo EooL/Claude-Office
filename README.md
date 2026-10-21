@@ -2,6 +2,27 @@
 
 A pixel art virtual office that visualizes your AI agents working in real-time. Watch Claude Code agents spawn, sit at desks, take coffee breaks, and chat in a Slack-inspired office chat panel — all rendered in an isometric pixel art office.
 
+## Multi-service office
+
+Run `npm run office` to open the local office and select an installed AI service in Settings.
+Services, Brains and Team configure enabled CLIs and ordered model fallbacks. Chat replies do not
+start work: a task starts a planning worker, and `/goal` approves execution after its plan is ready.
+Ask `status` for the actual task state, or `retry the last task` to replan a failed request.
+Circuit breakers skip unavailable services and allow one recovery probe after the retry delay.
+A service whose CLI cannot ask permission (agy) can be given full tool access for approved plans only,
+with a switch in Settings > Services (off by default).
+See [delegation and circuit breakers](docs/delegation-and-circuit-breakers.md) for permissions,
+fallback configuration, diagnostics and verification limits.
+
+Chat supports clickable web and file links, an authenticated local file reader, and inline image
+previews with click-to-enlarge. Recent chat messages are restored when the page reconnects.
+Agent recommendations offer **Plan recommended step**; ready plans offer **Approve and execute
+plan**, each with a **Decline** button. Approval applies once to that specific plan, and every
+approval or refusal is written to the chat as its own line.
+
+Settings > Events defaults to **Real events**. Optional emulated office events are labeled.
+See [events and next steps](docs/events-and-next-steps.md) to connect local commands or CI results.
+
 ## Update — 1.1: the level-up
 
 > We had 12 hours and 90 % of our 20x plan still to use 😂 so I asked Claude to level up Claude Office (using Fable 5.1 <img src="docs/images/claude-crab.gif" height="36" alt="" align="absmiddle"> and <img src="docs/images/ultracode.svg" height="20" alt="ultracode" align="absmiddle">).

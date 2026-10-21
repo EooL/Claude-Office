@@ -8,9 +8,10 @@ import Character from './components/Character'
 import FurnitureRenderer from './components/FurnitureRenderer'
 import SessionStrip from './components/SessionStrip'
 import Meters from './components/Meters'
+import SettingsPanel from './components/SettingsPanel'
 import AgentCard from './components/AgentCard'
 import PermissionCards from './components/PermissionCard'
-import { isPermissionEvent, reducePermissions, setUiToken, type PermissionAction, type PermissionCardState } from './permissions'
+import { isPermissionEvent, reducePermissions, setUiToken, getUiToken, type PermissionAction, type PermissionCardState } from './permissions'
 import StatusStrip from './components/StatusStrip'
 import { Agent, AGENT_CONFIGS } from './types'
 import { getCurrentPhase, getPhaseLabel, type DayPhase } from './daylight'
@@ -26,6 +27,8 @@ import {
 } from './officeReducer'
 import { BOSS_ROLE } from './config'
 import { officeHttpBase, officeWsUrl } from './serverUrl'
+import { mergeChatHistory } from './chatHistory'
+import { useEventMode, setEventMode } from './eventMode'
 import { pickEvent } from './events'
 import { getInteraction } from './interactions'
 import {
@@ -292,6 +295,10 @@ const App: React.FC = () => {
   const [muted, setMuted] = useState(false)
   const [dayPhase, setDayPhase] = useState<DayPhase>(getCurrentPhase())
   const [dayNightMode, setDayNightMode] = useState<'auto' | 'day' | 'night'>('auto')
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const eventMode = useEventMode(!isSimMode)
+  useEffect(() => { if (isSimMode) setEventMode('emulated') }, [])
+  const closeSettings = useCallback(() => setSettingsOpen(false), [])
 
   // Compressed day cycle: 10 min = 24 hours
   // nightOpacity: 0 = full day, 1 = full night
@@ -449,7 +456,7 @@ const App: React.FC = () => {
     id?: number,
     tag?: 'prompt' | 'reply',
   ) => {
-    setMessages(prev => [...prev.slice(-50), {
+    setMessages(prev => [...(id !== undefined ? prev.filter(m => m.id !== id) : prev).slice(-49), {
       id: id ?? makeMsgId(),
       sender,
       senderSprite: role,
@@ -701,7 +708,25 @@ const App: React.FC = () => {
   // WebSocket connection
   // ---------------------------------------------------------------------------
 
-  const { sessions, trusted } = useAgentSocket({ onEvent: handleEvent, url: officeWsUrl(), disabled: isSimMode })
+  const { sessions, trusted, connected } = useAgentSocket({ onEvent: handleEvent, url: officeWsUrl(), disabled: isSimMode })
+  useEffect(() => {
+    if (isSimMode || !connected) return
+    const controller = new AbortController()
+    void fetch(`${officeHttpBase()}/chat`, { signal: controller.signal }).then(r => r.ok ? r.json() : null).then(data => {
+      if (!Array.isArray(data?.messages) || controller.signal.aborted) return
+      const saved: ChatMessage[] = data.messages.map((row: { id: number; sender: string; role: string; text: string; timestamp: number; is_system?: boolean; reactions?: string }) => {
+        const role = row.sender.toLowerCase() === (AGENT_CONFIGS[BOSS_ROLE]?.title ?? 'Boss').toLowerCase() ? BOSS_ROLE : row.role || 'default'
+        const cfg = AGENT_CONFIGS[role] ?? AGENT_CONFIGS['default']
+        let reactions: string[] = []
+        try { reactions = JSON.parse(row.reactions ?? '[]') } catch {}
+        return { id: row.id, sender: row.sender, senderSprite: role, senderColor: cfg.color, text: row.text, channel: 'office-general',
+          timestamp: new Date(row.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }),
+          isSystem: !!row.is_system, reactions, avatarSrc: getAvatarSrc(role), displayName: themedDisplayName(role, row.sender) }
+      })
+      setMessages(prev => mergeChatHistory(prev, saved))
+    }).catch(() => {})
+    return () => controller.abort()
+  }, [connected])
   // The server showed this page the office read-only: no office token, or a
   // stale one (src/officeToken.ts). The cards and the chat stop offering
   // answers the server would refuse, and the status strip says how to fix it.
@@ -1192,6 +1217,7 @@ const App: React.FC = () => {
   // ---------------------------------------------------------------------------
 
   useEffect(() => {
+    if (!isSimMode && eventMode !== 'emulated') return
     // Percentage-based target positions for each event type (matching room layout)
     const EVENT_TARGETS: Record<string, { x: number; y: number }> = {
       'fire-drill': { x: 67.5, y: 48.9 },
@@ -1207,7 +1233,7 @@ const App: React.FC = () => {
       const event = pickEvent()
 
       // Post main slack announcement (system message)
-      addMsg('system', 'default', '#8b8d91', event.slackAnnouncement, true)
+      addMsg('system', 'default', '#8b8d91', `[Emulated] ${event.slackAnnouncement}`, true)
 
       // Incident mode: deploy-fail / who-broke-build start a 90 s mini-incident,
       // deploy-success ends one (the transition subscriber posts the chat lines)
@@ -1305,7 +1331,7 @@ const App: React.FC = () => {
     let timerRef = scheduleNext()
     return () => clearTimeout(timerRef)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [addMsg])
+  }, [addMsg, eventMode])
 
   // ---------------------------------------------------------------------------
   // Ambient office sounds
@@ -1383,9 +1409,11 @@ const App: React.FC = () => {
     // Send to server so Claude can read it. ?sim / ?video scripts stay local:
     // their scripted prompts must not reach chat.db or the AI watcher (C36).
     if (isSimMode) return
+    // /goal sends an agent to work on the files, so the server wants the page's UI token for it
+    const uiToken = getUiToken()
     fetch(`${officeHttpBase()}/chat`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(uiToken && /^\s*\/goal\b/i.test(text) ? { Authorization: `Bearer ${uiToken}` } : {}) },
       body: JSON.stringify({ sender: bossCfg.title, text }),
     }).catch(() => {})
   }, [addMsg])
@@ -1432,7 +1460,7 @@ const App: React.FC = () => {
         <div className="title-bar-dot" style={{ background: '#ff5f57' }} />
         <div className="title-bar-dot" style={{ background: '#febc2e' }} />
         <div className="title-bar-dot" style={{ background: '#28c840' }} />
-        <span className="title-bar-text">{titlePrefix}{variant === 'incident' ? '🔥 PROD IS DOWN — AGENT OFFICE' : 'CLAUDE CODE — AGENT OFFICE'}</span>
+        <span className="title-bar-text">{titlePrefix}{variant === 'incident' ? '⚠ INCIDENT — AGENT OFFICE' : 'CLAUDE CODE — AGENT OFFICE'}</span>
         <SessionStrip sessions={sessions} agents={agents} />
         <button
           className="title-bar-daynight"
@@ -1444,6 +1472,14 @@ const App: React.FC = () => {
           {dayNightMode === 'auto' ? 'AUTO' : dayNightMode === 'day' ? 'DAY' : 'NIGHT'}
         </button>
         <span className="title-bar-phase">{getPhaseLabel(effectivePhase)}</span>
+        {!isSimMode && (
+          <button className="title-bar-settings" onClick={() => setSettingsOpen(true)} title="Settings" aria-label="Settings">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
+            </svg>
+          </button>
+        )}
       </div>
 
       <div className="app-body">
@@ -1573,6 +1609,7 @@ const App: React.FC = () => {
       <Meters onNotice={text => addMsg('system', 'default', '#8b8d91', text, true)} />
       <SlackChat
         messages={messages}
+        activeAgentCount={agents.filter(agent => agent.state !== 'completed').length}
         muted={muted}
         volume={volume}
         onToggleMute={handleToggleMute}
@@ -1588,6 +1625,7 @@ const App: React.FC = () => {
       </div>
       </div>
       <StatusStrip office={officeRef} sessions={sessions} readOnly={readOnly} />
+      {!isSimMode && <SettingsPanel readOnly={readOnly} open={settingsOpen} onClose={closeSettings} />}
     </div>
   )
 }

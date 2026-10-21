@@ -3,6 +3,17 @@ import { defineConfig } from 'vitest/config'
 // Server/hook tests only for now — they run in plain Node. Frontend (jsdom)
 // tests from TEST_PLAN.md can be added as a second project later.
 export default defineConfig({
+  plugins: [{
+    name: 'test-strip-cli-hashbang',
+    enforce: 'pre',
+    transform(code, id) {
+      // Vite 5's SSR hashbang matcher misses CRLF and hoists imports before
+      // the hashbang, producing invalid JavaScript in Windows checkouts.
+      if (/\.[cm]?js$/.test(id) && code.startsWith('#!')) {
+        return { code: code.replace(/^#![^\n]*(?:\n|$)/, '\n'), map: null }
+      }
+    },
+  }],
   test: {
     environment: 'node',
     include: ['tests/**/*.test.ts'],

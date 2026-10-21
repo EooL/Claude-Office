@@ -7,14 +7,22 @@
  */
 
 import { execFileSync, spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 
 const INSTALLER = fileURLToPath(new URL('../hooks/install-hooks.sh', import.meta.url))
-const TRACKER_SCRIPT = fileURLToPath(new URL('../hooks/agent-tracker.sh', import.meta.url))
+// Git Bash speaks MSYS paths; native Python receives converted standalone argv.
+const bashPath = (path: string) => process.platform === 'win32'
+  ? execFileSync('cygpath', ['-u', path], { encoding: 'utf8' }).trim()
+  : path
+const TRACKER_SCRIPT = fileURLToPath(new URL('../hooks/agent-tracker.sh', import.meta.url)).replace(/\\/g, '/')
+const STATUS_SCRIPT = fileURLToPath(new URL('../hooks/status-line.sh', import.meta.url)).replace(/\\/g, '/')
+const TRACKER_PY = fileURLToPath(new URL('../hooks/agent-tracker.py', import.meta.url))
+const nativeText = (text: string) => process.platform === 'win32' ? text.replace(/\n/g, '\r\n') : text
+const readCommand = (file: string) => readFileSync(file, 'utf8').replace(/\r\n/g, '\n')
 /** Every event the installer registers: workers, sessions, and the main thread's turn (prompt, reply, needs-you, errors, compaction). */
 const EVENTS = [
   'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'SubagentStart', 'SubagentStop',
@@ -50,7 +58,10 @@ function freshHome() {
 /** The installer's environment: temp HOME and AGENT_OFFICE_HOME, never the caller's CLAUDE_CONFIG_DIR */
 function installerEnv(home: string, extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   const { CLAUDE_CONFIG_DIR: _ignored, ...env } = process.env
-  return { ...env, HOME: home, AGENT_OFFICE_HOME: join(home, '.agent-office'), ...extra }
+  return {
+    ...env, HOME: home, AGENT_OFFICE_HOME: join(home, '.agent-office'),
+    ...extra,
+  }
 }
 
 function runInstaller(home: string) {
@@ -90,6 +101,33 @@ describe('install-hooks.sh', () => {
 
     // A backup is taken before writing
     expect(readdirSync(join(home, '.claude')).some(f => f.startsWith('settings.json.backup.'))).toBe(true)
+  })
+
+  it('registers a runnable checkout hook with its adjacent Python companion', () => {
+    const home = freshHome()
+    runInstaller(home)
+    const command = readSettings(home).hooks.SessionStart[0].hooks[0].command
+    expect(command).toBe(`bash "${TRACKER_SCRIPT}"`)
+    expect(existsSync(TRACKER_PY)).toBe(true)
+    const result = spawnSync('bash', ['-c', command], {
+      encoding: 'utf8', env: installerEnv(home), input: '{}', timeout: 5000,
+    })
+    expect(result.error).toBeUndefined()
+    expect(result.status).toBe(0)
+    expect(result.stderr).toBe('')
+  })
+
+  it('refuses an incomplete checkout before creating settings when the Python companion is missing', () => {
+    const home = freshHome()
+    const hooks = join(home, 'checkout', 'hooks')
+    mkdirSync(hooks, { recursive: true })
+    const installer = join(hooks, 'install-hooks.sh')
+    copyFileSync(INSTALLER, installer)
+    copyFileSync(TRACKER_SCRIPT, join(hooks, 'agent-tracker.sh'))
+    const result = spawnSync('bash', [installer], { encoding: 'utf8', env: installerEnv(home), timeout: 5000 })
+    expect(result.status).toBe(1)
+    expect(result.stdout).toContain('Tracker companion not found:')
+    expect(existsSync(settingsPath(home))).toBe(false)
   })
 
   it('adds the missing events to an older install that only had PostToolUse, keeping everything else', () => {
@@ -202,10 +240,10 @@ describe('install-hooks.sh', () => {
     expect(again).toContain(`hooks: 0 added, 0 repointed at this checkout, ${EVENTS.length} unchanged`)
   })
 
-  it('leaves an entry that already points at this checkout alone, however it was quoted', () => {
+  it.each([...new Set([TRACKER_SCRIPT, bashPath(TRACKER_SCRIPT)])])('leaves an entry that already points at this checkout alone (%s)', (path) => {
     const home = freshHome()
     mkdirSync(join(home, '.claude'), { recursive: true })
-    const mine = { matcher: '', hooks: [{ type: 'command', command: `bash ${TRACKER_SCRIPT}` }] }
+    const mine = { matcher: '', hooks: [{ type: 'command', command: `bash ${path}` }] }
     writeFileSync(settingsPath(home), JSON.stringify({ hooks: { PreToolUse: [mine] } }))
 
     const out = runInstaller(home)
@@ -330,8 +368,8 @@ describe('install-hooks.sh: status line (payroll / electricity / memory)', () =>
     const settings = readSettings(home)
     expect(settings.statusLine).toEqual({ type: 'command', command: expect.stringMatching(STATUS_COMMAND), padding: 2, refreshInterval: 5 })
     expect(settings.subagentStatusLine).toEqual({ type: 'command', command: expect.stringMatching(SUBAGENT_COMMAND) })
-    expect(readFileSync(join(home, '.agent-office', 'statusline-prev'), 'utf8')).toBe('~/.claude/statusline.sh\n')
-    expect(readFileSync(join(home, '.agent-office', 'subagent-statusline-prev'), 'utf8')).toBe('jq -c \'.tasks[] | {id, content: .label}\'\n')
+    expect(readCommand(join(home, '.agent-office', 'statusline-prev'))).toBe('~/.claude/statusline.sh\n')
+    expect(readCommand(join(home, '.agent-office', 'subagent-statusline-prev'))).toBe('jq -c \'.tasks[] | {id, content: .label}\'\n')
     expect(out).toContain('[wrap] statusLine')
     expect(out).toContain('~/.claude/statusline.sh')
     expect(out).toContain('[wrap] subagentStatusLine')
@@ -356,7 +394,7 @@ describe('install-hooks.sh: status line (payroll / electricity / memory)', () =>
     expect(first).toContain('[update] subagentStatusLine (was /old/checkout/hooks/status-line.sh)')
     expect(first).not.toContain('[wrap]')
     // The chained command is still the user's own, not the stale office command
-    expect(readFileSync(join(home, '.agent-office', 'statusline-prev'), 'utf8')).toBe('~/.claude/statusline.sh\n')
+    expect(readCommand(join(home, '.agent-office', 'statusline-prev'))).toBe('~/.claude/statusline.sh\n')
     expect(existsSync(join(home, '.agent-office', 'subagent-statusline-prev'))).toBe(false)
 
     const before = readFileSync(settingsPath(home))
@@ -366,10 +404,9 @@ describe('install-hooks.sh: status line (payroll / electricity / memory)', () =>
     expect(second).toContain('[skip] subagentStatusLine already registered')
   })
 
-  it('recognises the office status line by path, not by spelling: an unquoted command for this checkout is left alone', () => {
+  it.each([...new Set([STATUS_SCRIPT, bashPath(STATUS_SCRIPT)])])('recognises this checkout status line by path (%s)', (statusScript) => {
     const home = freshHome()
     mkdirSync(join(home, '.claude'), { recursive: true })
-    const statusScript = INSTALLER.replace(/install-hooks\.sh$/, 'status-line.sh')
     writeFileSync(settingsPath(home), JSON.stringify({ statusLine: { type: 'command', command: `bash ${statusScript}`, padding: 0 } }))
 
     const out = runWith(home)
@@ -395,7 +432,7 @@ describe('install-hooks.sh --uninstall', () => {
   /** Writes settings.json the way the installer does (two-space indent, trailing newline), so a put-back file can be compared byte for byte */
   function writeSettings(home: string, settings: unknown) {
     mkdirSync(join(home, '.claude'), { recursive: true })
-    const text = JSON.stringify(settings, null, 2) + '\n'
+    const text = nativeText(JSON.stringify(settings, null, 2) + '\n')
     writeFileSync(settingsPath(home), text)
     return text
   }
@@ -411,7 +448,9 @@ describe('install-hooks.sh --uninstall', () => {
     expect(readSettings(home).statusLine).toBeDefined()
 
     const out = uninstall(home)
-    expect(readText(home)).toBe('{}\n')
+    expect(readText(home)).toBe(nativeText('{}\n'))
+    // Uninstall removes registrations, never the shared checkout sources.
+    expect(existsSync(TRACKER_PY)).toBe(true)
     for (const event of EVENTS) expect(out).toContain(`[remove] ${event} (`)
     expect(out).toContain(`hooks: ${EVENTS.length} office entries removed`)
     expect(out).toContain('[remove] statusLine (was ')
@@ -603,7 +642,7 @@ describe('install-hooks.sh: a settings file that is not valid JSON is refused, n
 
     const res = runRaw(home, args)
     expect(res.status).toBe(1)
-    expect(res.stderr).toContain(`${settingsPath(home)} is not valid JSON (line 1, column `)
+    expect(res.stderr).toContain(`${bashPath(settingsPath(home))} is not valid JSON (line 1, column `)
     expect(res.stderr).toContain('Nothing was changed')
     expect(res.out).not.toMatch(/Traceback|Installation complete|Uninstall complete/)
     expect(readFileSync(settingsPath(home), 'utf8')).toBe(BROKEN)
@@ -629,7 +668,7 @@ describe('install-hooks.sh: only hooks/agent-tracker.sh and hooks/status-line.sh
   const lookalikeHook = { matcher: '', hooks: [{ type: 'command', command: 'bash ~/bin/my-agent-tracker.sh --log /tmp/x' }] }
   const writeJson = (home: string, settings: unknown) => {
     mkdirSync(join(home, '.claude'), { recursive: true })
-    const text = JSON.stringify(settings, null, 2) + '\n'
+    const text = nativeText(JSON.stringify(settings, null, 2) + '\n')
     writeFileSync(settingsPath(home), text)
     return text
   }
@@ -647,7 +686,7 @@ describe('install-hooks.sh: only hooks/agent-tracker.sh and hooks/status-line.sh
     expect(out).toContain('[wrap] statusLine')
     expect(out).not.toContain('[update] statusLine')
     expect(settings.statusLine).toEqual({ type: 'command', command: expect.stringMatching(/^bash ".*\/hooks\/status-line\.sh"$/), padding: 2 })
-    expect(readFileSync(join(home, '.agent-office', 'statusline-prev'), 'utf8')).toBe(`${command}\n`)
+    expect(readCommand(join(home, '.agent-office', 'statusline-prev'))).toBe(`${command}\n`)
 
     const removed = execFileSync('bash', [INSTALLER, '--uninstall'], { encoding: 'utf8', env: installerEnv(home) })
     expect(removed).toContain(`[restore] statusLine: ${command}`)
@@ -756,7 +795,7 @@ describe('install-hooks.sh: CLAUDE_CONFIG_DIR', () => {
 
     const installed = runRaw(home, [], env)
     expect(installed.status).toBe(0)
-    expect(installed.out).toContain(join(config, 'settings.json'))
+    expect(installed.out).toContain(bashPath(join(config, 'settings.json')))
     const settings = JSON.parse(readFileSync(join(config, 'settings.json'), 'utf8'))
     for (const event of EVENTS) expect(trackerGroups(settings, event)).toEqual([OUR_GROUP])
     expect(settings.statusLine).toBeDefined()
@@ -766,8 +805,8 @@ describe('install-hooks.sh: CLAUDE_CONFIG_DIR', () => {
 
     const removed = runRaw(home, ['--uninstall'], env)
     expect(removed.status).toBe(0)
-    expect(removed.out).toContain(`Removing the office hooks and status line from ${join(config, 'settings.json')}`)
-    expect(readFileSync(join(config, 'settings.json'), 'utf8')).toBe('{}\n')
+    expect(removed.out).toContain(`Removing the office hooks and status line from ${bashPath(join(config, 'settings.json'))}`)
+    expect(readFileSync(join(config, 'settings.json'), 'utf8')).toBe(nativeText('{}\n'))
     expect(existsSync(join(home, '.claude'))).toBe(false)
   })
 
@@ -786,7 +825,11 @@ describe('install-hooks.sh: backups', () => {
     mkdirSync(bin, { recursive: true })
     writeFileSync(join(bin, 'date'), '#!/bin/sh\necho 20261015_120000\n')
     chmodSync(join(bin, 'date'), 0o755)
-    return { PATH: `${bin}:${process.env.PATH}` }
+    // Git for Windows' bin/bash launcher prepends /usr/bin even to an explicit
+    // PATH. Apply the fake clock inside Bash after that startup adjustment.
+    const bashEnv = join(home, 'clock-env.sh')
+    writeFileSync(bashEnv, `export PATH="${bashPath(bin)}:$PATH"\n`)
+    return { BASH_ENV: bashPath(bashEnv) }
   }
   const dir = (home: string) => join(home, '.claude')
   const backupsIn = (home: string) => readdirSync(dir(home)).filter(f => f.startsWith('settings.json.backup.')).sort()

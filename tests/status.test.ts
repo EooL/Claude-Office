@@ -8,7 +8,7 @@ import request from 'supertest'
 import WebSocket from 'ws'
 import { listen, loadOffice, removeOffice, type Office, type OfficeServer } from './helpers'
 import express from 'express'
-import { BURN_WINDOW_MS, HISTORY_POINTS, computeBurn, createStatusStore, mountStatus, validateStatus } from '../server/status.js'
+import { BURN_WINDOW_MS, HISTORY_POINTS, computeBurn, createStatusStore, mountStatus, validateStatus, validateUsage } from '../server/status.js'
 
 // Pass-through mock so the test can see the server reach for timingSafeEqual
 vi.mock('crypto', async (importOriginal) => {
@@ -437,5 +437,52 @@ describe('WebSocket', () => {
     await postStatus(office.server, { type: 'agent_status', sessionId: SID, agents: [{ id: 'ac5', tokens: 100 }] })
     const ev = await a.next(m => m.type === 'agent_status')
     expect(ev).toMatchObject({ sessionId: SID, agents: [{ id: 'ac5', tokens: 100 }] })
+  })
+})
+
+describe('adapter usage (POST /usage)', () => {
+  const run = (usage: Record<string, number>, extra: Record<string, unknown> = {}) => ({ service: 'codex', label: 'OpenAI Codex', usage, ...extra })
+
+  it('keeps an unreported neutral cost distinct from a measured zero', () => {
+    const s = createStatusStore()
+    s.ingestUsage(run({ inputTokens: 10, costUsd: 0 }, { reported: ['inputTokens'] }))
+    expect(s.summary().sessions[0].usageReported).toEqual(['inputTokens'])
+    s.ingestUsage(run({ costUsd: 0 }, { reported: ['costUsd'] }))
+    expect(s.summary().sessions[0].usageReported).toContain('costUsd')
+  })
+
+  it('validateUsage names the problem', () => {
+    expect(validateUsage(null)).toBe('Missing body')
+    expect(validateUsage({})).toBe('Missing service')
+    expect(validateUsage({ service: 'codex', usage: 5 })).toBe('usage must be an object')
+    expect(validateUsage(run({}))).toBeNull()
+  })
+
+  it('keeps one record per service: cost adds up, every run counts its tokens, a missing cost adds 0', () => {
+    let clock = 1_700_000_000_000
+    const s = createStatusStore({ now: () => clock })
+    s.ingestUsage(run({ inputTokens: 1000, outputTokens: 50, costUsd: 0.01 }))
+    clock += 60_000
+    // The same sample twice is still two round-trips
+    s.ingestUsage(run({ inputTokens: 1000, outputTokens: 50 }))
+    const { sessions } = s.summary()
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0]).toMatchObject({ sessionId: 'usage-codex', project: 'OpenAI Codex', model: 'OpenAI Codex', cost: 0.01, context: { used: null, input: 1000, output: 50 } })
+    expect(s.get('usage-codex').history).toHaveLength(2)
+    expect(sessions[0].burn.tokensPerMin).toBe(1050)
+  })
+
+  it('does not take the MEMORY meter: its context fill is unknown, not 0', () => {
+    const s = createStatusStore({ now: () => 1_700_000_000_000 })
+    s.ingestUsage(run({ inputTokens: 10, outputTokens: 1 }))
+    expect(s.summary().sessions[0].context.used).toBeNull()
+  })
+
+  it('clamps junk and falls back to neutral numbers', () => {
+    const s = createStatusStore({ now: () => 1_700_000_000_000 })
+    s.ingestUsage({ service: 'x'.repeat(100), usage: { inputTokens: 'lots', outputTokens: -5, costUsd: NaN } })
+    const [rec] = s.summary().sessions
+    expect(rec.sessionId).toBe(`usage-${'x'.repeat(40)}`)
+    expect(rec).toMatchObject({ cost: 0, context: { input: 0, output: 0 } })
   })
 })

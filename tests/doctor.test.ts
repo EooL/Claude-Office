@@ -143,7 +143,7 @@ describe('runDoctor', () => {
     const hooks = line(r, 'hooks:')!
     expect(hooks.level).toBe(PASS)
     expect(hooks.title).toMatch(/^hooks: 19\/19 events run /)
-    expect(hooks.title).toContain(TRACKER)
+    expect(hooks.title.replaceAll('\\', '/').toLowerCase()).toContain(TRACKER.replaceAll('\\', '/').toLowerCase())
     expect(lines(r, 'hooks:')).toHaveLength(1)                 // no "not this checkout" / duplicate lines
     expect(lines(r, 'plugin')).toHaveLength(0)
     const status = line(r, 'status line:')!
@@ -180,7 +180,7 @@ describe('runDoctor', () => {
     const other = tmp('doctor-other-checkout-')
     mkdirSync(join(other, 'hooks'))
     writeFileSync(join(other, 'hooks', 'agent-tracker.sh'), '#!/bin/bash\n')
-    const entry = (path: string) => ({ type: 'command', command: `bash "${path}/hooks/agent-tracker.sh"` })
+    const entry = (path: string) => ({ type: 'command', command: `bash "${path.replaceAll('\\', '/')}/hooks/agent-tracker.sh"` })
     writeSettings(join(home, '.claude'), {
       hooks: {
         PreToolUse: [{ matcher: '', hooks: [entry(other)] }],
@@ -194,7 +194,7 @@ describe('runDoctor', () => {
     expect(summary.title).toMatch(/^hooks: 2\/19 events run /)
     expect(summary.title).toContain('missing: PostToolUseFailure, SubagentStart')
     expect(foreign.level).toBe(WARN)
-    expect(foreign.title).toContain(`${other}/hooks/agent-tracker.sh is not this checkout's hooks/agent-tracker.sh`)
+    expect(foreign.title).toContain(`${other.replaceAll('\\', '/')}/hooks/agent-tracker.sh is not this checkout's hooks/agent-tracker.sh`)
     expect(dup.level).toBe(WARN)
     expect(dup.title).toContain('registered twice for PostToolUse')
     expect(line(r, 'status line:')?.level).toBe(WARN)
@@ -318,14 +318,24 @@ describe('runDoctor', () => {
     writeFileSync(token, 'secret\n')
     chmodSync(token, 0o644)
     const loose = (await runDoctor(await base(home))) as Report
-    expect(line(loose, 'token:')?.level).toBe(FAIL)
-    expect(line(loose, 'token:')?.title).toContain('mode 0644')
-    expect(line(loose, 'token:')?.notes.join(' ')).toContain(`chmod 600 "${token}"`)
-    expect(loose.ok).toBe(false)
+    if (process.platform === 'win32') {
+      // POSIX chmod cannot express Windows ACLs: the doctor must not claim
+      // either safe permissions or a world-readable token from stat.mode.
+      expect(line(loose, 'token:')?.level).toBe(WARN)
+      expect(line(loose, 'token:')?.title).toContain('Windows ACL permissions not verified')
+      chmodSync(token, 0o600)
+      const tight = (await runDoctor(await base(home))) as Report
+      expect(line(tight, 'token:')?.level).toBe(WARN)
+    } else {
+      expect(line(loose, 'token:')?.level).toBe(FAIL)
+      expect(line(loose, 'token:')?.title).toContain('mode 0644')
+      expect(line(loose, 'token:')?.notes.join(' ')).toContain(`chmod 600 "${token}"`)
+      expect(loose.ok).toBe(false)
 
-    chmodSync(token, 0o600)
-    const tight = (await runDoctor(await base(home))) as Report
-    expect(line(tight, 'token:')).toEqual({ level: PASS, title: `token: ${token} (0600)`, notes: [] })
+      chmodSync(token, 0o600)
+      const tight = (await runDoctor(await base(home))) as Report
+      expect(line(tight, 'token:')).toEqual({ level: PASS, title: `token: ${token} (0600)`, notes: [] })
+    }
 
     // AGENT_OFFICE_HOME from the environment is honoured
     const elsewhere = tmp('doctor-office-home-')
@@ -339,7 +349,11 @@ describe('runDoctor', () => {
     const bin = tmp('doctor-bin-')
     for (const name of ['bash', 'curl']) {
       const real = execFileSync('bash', ['-c', `command -v ${name}`], { encoding: 'utf8' }).trim()
-      symlinkSync(real, join(bin, name))
+      if (process.platform === 'win32') {
+        // which() tests presence, not execution. Avoid privileged symlinks and
+        // MSYS paths that are not native filesystem paths.
+        writeFileSync(join(bin, `${name}.exe`), '')
+      } else symlinkSync(real, join(bin, name))
     }
     const r = (await runDoctor(await base(home, { path: bin }))) as Report
     expect(line(r, 'bash:')?.level).toBe(PASS)
@@ -407,7 +421,10 @@ describe('runDoctor against a running server', () => {
     const hooks = line(r, 'hooks reaching the server:')!
     expect(hooks.level).toBe(PASS)
     expect(hooks.title).toMatch(/^hooks reaching the server: 2 since it started, last \d+ s ago$/)
-    expect(line(r, 'token:')).toEqual({ level: PASS, title: `token: ${office.server.TOKEN_FILE} (0600)`, notes: [] })
+    if (process.platform === 'win32') {
+      expect(line(r, 'token:')?.level).toBe(WARN)
+      expect(line(r, 'token:')?.title).toContain('Windows ACL permissions not verified')
+    } else expect(line(r, 'token:')).toEqual({ level: PASS, title: `token: ${office.server.TOKEN_FILE} (0600)`, notes: [] })
     // AGENT_OFFICE_UI_DIR is unset, so the server reports whatever this checkout's dist/ holds
     if (office.server.UI_AVAILABLE) expect(line(r, 'server: UI not built')).toBeUndefined()
     else expect(line(r, 'server: UI not built')?.level).toBe(WARN)

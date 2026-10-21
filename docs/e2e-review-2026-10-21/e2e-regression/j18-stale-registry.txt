@@ -1,0 +1,42 @@
+=== J18 STALE REGISTRY RESTART TEST ===
+Test Root: C:/Users/iulia/AppData/Local/Temp/office-e2e-j18-root
+Test Home: C:/Users/iulia/AppData/Local/Temp/office-e2e-j18-home
+
+Created invalid registry file: C:\Users\iulia\AppData\Local\Temp\office-e2e-j18-root\building.json
+Starting server with invalid building.json...
+Exit code: 1
+Stderr: file:///C:/Users/iulia/AppData/Local/Temp/office-e2e-snapshot2/server/registry.mjs:56
+    throw new Error(`${error.message}. ${file} cannot be used; fix it, or delete it to return to the single-office view (it holds nothing else).`, { cause: error })
+          ^
+
+Error: Unsupported building schemaVersion. C:\Users\iulia\AppData\Local\Temp\office-e2e-j18-root\building.json cannot be used; fix it, or delete it to return to the single-office view (it holds nothing else).
+    at readBuilding (file:///C:/Users/iulia/AppData/Local/Temp/office-e2e-snapshot2/server/registry.mjs:56:11)
+    at officeHome (file:///C:/Users/iulia/AppData/Local/Temp/office-e2e-snapshot2/server/paths.mjs:14:18)
+    ... 3 lines matching cause stack trace ...
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5) {
+  [cause]: Error: Unsupported building schemaVersion
+      at validate (file:///C:/Users/iulia/AppData/Local/Temp/office-e2e-snapshot2/server/registry.mjs:18:56)
+      at readBuilding (file:///C:/Users/iulia/AppData/Local/Temp/office-e2e-snapshot2/server/registry.mjs:48:19)
+      at officeHome (file:///C:/Users/iulia/AppData/Local/Temp/office-e2e-snapshot2/server/paths.mjs:14:18)
+      at file:///C:/Users/iulia/AppData/Local/Temp/office-e2e-snapshot2/server/default-office.mjs:7:51
+      at ModuleJob.run (node:internal/modules/esm/module_job:439:25)
+      at async node:internal/modules/esm/loader:643:26
+      at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)
+}
+
+Node.js v24.19.0
+Stdout: 
+
+Refused to start: true
+Names building.json: true
+Says to delete it: true
+[PASS] Refuses to start with invalid building.json and provides clear recovery instructions.
+
+Deleting building.json...
+Starting server again after deleting building.json...
+Started normally: true
+Server output snippet:   Auth token written to: C:\Users\iulia\AppData\Local\Temp\office-e2e-j18-home\auth-token
+  Agent Office: http://127.0.0.1:4999/#token=<redacted-64-hex>
+[PASS] Server starts normally once building.json is deleted.
+
+=== J18 RESULT: ALL CHECKS COMPLETED ===

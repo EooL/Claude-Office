@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
-const read = (rel: string) => readFileSync(join(ROOT, rel), 'utf8')
+const read = (rel: string) => readFileSync(join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n')
 const SYNC = join(ROOT, 'scripts', 'sync-plugin-version.mjs')
 
 const pkg = JSON.parse(read('package.json'))

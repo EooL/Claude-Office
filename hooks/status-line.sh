@@ -219,6 +219,10 @@ print('%s · ctx %s%% · $%.2f' % (model_name, ('%d' % round(used)) if used is n
 PYEOF
 )
 
+# Native Windows Python writes CRLF. Normalize the record separator before
+# splitting the event from display text, including an intentionally empty event.
+OUT="${OUT//$'\r'/}"
+
 NL='
 '
 EVENT_JSON="${OUT%%"$NL"*}"

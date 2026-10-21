@@ -1,0 +1,72 @@
+/* ===== Job description panel (src/components/JobDescription.tsx), inside the Team tab's detail pane ===== */
+.jd, .jd-detail { min-width: 0; }
+.jd button:focus-visible, .jd a:focus-visible, .jd textarea:focus-visible { outline: 2px solid var(--meter-electric-hi, #9ad1ff); outline-offset: 2px; }
+.jd-status { padding: 1px 8px; font-size: 11px; border: 1px solid var(--meter-border, #2b2e33); border-radius: 10px; }
+.jd-status.is-approved { color: var(--meter-ok, #2bac76); border-color: var(--meter-ok, #2bac76); }
+.jd-status.is-draft { color: var(--meter-electric-hi, #9ad1ff); border-color: var(--meter-electric, #4fa3ff); }
+.jd-chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 8px; padding: 0; list-style: none; }
+.jd-chip { padding: 1px 8px; font-size: 11px; background: var(--meter-tile, #1d2024); border-radius: 10px; }
+.jd-chip span { color: var(--meter-sub, #8b8d91); }
+.jd-warnings, .jd-problems { margin: 6px 0; padding-left: 18px; font-size: 12px; color: var(--meter-sub, #8b8d91); }
+.jd-problems { color: inherit; }
+.jd-access { margin: 6px 0; font-size: 12px; }
+.jd-access ul { margin: 2px 0 0; padding-left: 18px; }
+.jd-access li.is-warn { color: var(--meter-sub, #8b8d91); }
+.jd-li { padding-left: 14px; text-indent: -10px; }
+.jd-li::before { content: "- "; }
+.jd-editor label { display: block; margin-bottom: 4px; font-size: 12px; }
+.jd-text { box-sizing: border-box; width: 100%; min-height: 400px; overflow: hidden; padding: 8px; font: 12px/1.4 ui-monospace, Consolas, monospace; color: inherit; background: var(--meter-tile, #1d2024); border: 1px solid var(--meter-border, #2b2e33); border-radius: 6px; resize: none; }
+.jd-diff { margin-top: 8px; font: 11px/1.4 ui-monospace, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.jd-diff .is-add { color: var(--meter-ok, #2bac76); }
+.jd-diff .is-del { color: var(--meter-sub, #8b8d91); text-decoration: line-through; }
+.jd-confirm { margin: 8px 0 0; font-size: 12px; }
+.jd-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.jd-actions .backend-primary, .jd-actions .backend-secondary { padding: 4px 12px; }
+.jd-link { text-decoration: none; }
+
+/* ===== the agent CV (CvShell): one scroll area, the pane itself (.org-right) ===== */
+.cv { min-width: 0; container-type: inline-size; font-size: 12px; }
+.cv button:focus-visible, .cv a:focus-visible, .cv textarea:focus-visible { outline: 2px solid var(--meter-electric-hi, #9ad1ff); outline-offset: 2px; }
+/* Compact header band, sticky at the top of the scroll area; the action bar and the notices live inside it */
+.cv-head { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: flex-start; padding: 8px 12px; background: var(--meter-tip-bg, #0f1113); border: 1px solid var(--meter-border, #2b2e33); border-radius: 8px; }
+.cv-head.is-sticky { position: sticky; top: 0; z-index: 2; border-top-width: 0; border-radius: 0 0 8px 8px; box-shadow: 0 1px 0 var(--meter-border, #2b2e33); }
+.cv-portrait { flex: none; width: 56px; height: 56px; object-fit: contain; image-rendering: pixelated; background: var(--meter-tile, #1d2024); border: 2px solid var(--meter-border, #2b2e33); border-radius: 12px; }
+.cv-id { min-width: 0; flex: 1; }
+.cv-project { display: grid; place-items: center; font-size: 32px; }
+.cv-titlerow { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.cv-name { display: flex; align-items: baseline; gap: 8px; margin: 0; font-size: 16px; line-height: 1.2; }
+.cv-role { font-size: 11px; font-weight: normal; color: var(--meter-sub, #8b8d91); }
+.cv-headline { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; margin: 2px 0 0; font-size: 12px; line-height: 1.35; }
+.cv-meta { display: flex; flex-wrap: wrap; gap: 2px 14px; margin: 3px 0 0; font-size: 11px; color: var(--meter-sub, #8b8d91); }
+.cv-label { color: var(--meter-sub, #8b8d91); }
+.cv-person { padding: 0; margin: 0; font-size: inherit; }
+.cv-head .cv-actions { flex: 1 0 100%; gap: 4px; margin: 2px 0 0; }
+.cv-head .cv-actions .backend-secondary, .cv-head .cv-actions .backend-primary { padding: 3px 8px; font-size: 11px; }
+.cv-notices { flex: 1 0 100%; }
+.cv-notices:empty { display: none; }
+.cv-notices p { margin: 2px 0 0; }
+.cv-cols { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 16px; margin-top: 12px; align-items: start; }
+.cv-side, .cv-main { min-width: 0; }
+.cv-block { margin: 0 0 8px; padding: 8px; background: var(--meter-tip-bg, #0f1113); border-radius: 6px; }
+.cv-block .ts, .cv-block .ts-button, .cv-block select, .cv-block input { width: 100%; min-width: 0; box-sizing: border-box; }
+.cv-block .jd-chip { overflow-wrap: anywhere; }
+.cv-block .org-rec { margin: 6px 0 4px; padding: 6px 8px; }
+.cv-block .org-rec-head { justify-content: space-between; align-items: center; flex-wrap: nowrap; }
+.cv-block .org-rec-head strong { min-width: 0; font-size: 11px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cv-block .org-rec-toggle { flex: none; font-size: 11px; }
+.cv-block h4, .cv-section h4 { margin: 0 0 6px; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--meter-sub, #8b8d91); }
+.cv-block .org-field { flex-direction: column; align-items: stretch; gap: 4px; }
+.cv-block .org-field select, .cv-block .org-field input { width: 100%; }
+.cv-block .jd-chips { margin-bottom: 4px; }
+.cv-sub { margin: 6px 0 2px; color: var(--meter-sub, #8b8d91); }
+.jd-chips.is-denied .jd-chip { text-decoration: line-through; color: var(--meter-sub, #8b8d91); }
+.cv-section { margin: 0 0 14px; padding: 0 0 12px; border-bottom: 1px solid var(--meter-border, #2b2e33); }
+.cv-section:last-child { border-bottom: 0; }
+.cv-section h4 { font-size: 13px; color: var(--meter-fg, #e6e6e6); text-transform: none; letter-spacing: 0; }
+.cv-section p { margin: 4px 0; line-height: 1.5; }
+.cv-section.is-must-not { padding: 10px 12px; border: 1px solid var(--meter-warn, #d9a441); border-left-width: 4px; border-radius: 6px; background: var(--meter-tile, #1d2024); }
+.cv-section.is-must-not h4 { color: var(--meter-warn, #d9a441); }
+/* Narrow pane: the sidebar goes above the sections */
+@container (max-width: 560px) {
+  .cv-cols { grid-template-columns: minmax(0, 1fr); }
+}

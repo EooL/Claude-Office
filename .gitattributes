@@ -1,0 +1,10 @@
+# Regression fixture must exercise Windows CRLF hashbang transformation.
+tests/fixtures/crlf-shebang.mjs text eol=crlf
+# The tracker wrapper must stay a POSIX shell script in Windows checkouts.
+hooks/agent-tracker.sh text eol=lf
+# File-layout characterization compares serialized fixture bytes on Windows.
+tests/fixtures/file-layout.json text eol=lf
+# Shell and Python scripts must stay LF in Windows checkouts.
+*.sh text eol=lf
+*.py text eol=lf
+hooks/*.sh text eol=lf

@@ -1,0 +1,19 @@
+# Autonomous run log
+- 09:36 start. Codex 5h quota 90% (reset 12:07): not used. agy Qoder run still active; qodercli -p smoke: no output in 60s.
+- 09:46 T0: Qoder blocked (provider RESOURCE_LIMIT 403 queue p3 on all models; qodercli hangs polling instead of exiting -> adapter waits 150-180s per call; classified as timeout not limit). No boundary violation. PHASE4A-QODER.md written by agy.
+- 09:41 T1 started: full test:win
+- 09:43 T1: full test:win exit 0, 61/61 files passed, no failures/timeouts (log autonomous-test-win.log)
+- 09:46 T2: OpenCode plan/write on 3 non-Google models all blocked by credentials (Anthropic key not workspace-scoped; OpenAI gateway key invalid; OpenRouter timeout). No boundary violation. -> PHASE4A-OPENCODE-RETRY.md
+- 09:48 T3: Antigravity plan+write PASS without bypass when the prompt says use file tools not shell (accept-edits; also with --sandbox). Proposal only. -> PHASE4A-AGY-EXPERIMENT.md
+- 09:58 T4 done + T5 verified (16/17 refs exact). Report written. Run complete.
+- 10:20 continue: building-and-levels.md updated (facade, createOffice/start split, 2 more homeDir users); PROPOSED-CHANGES.md written (agy prompt, Qoder limit detection); qodercli prints nothing on stdout/stderr when limited (limit only in ~/.qoder/logs).
+- 11:06 Ok-continua: applied agy write sentence (write only) + Qoder timeoutHint; tests/adapter-hints.test.ts 5/5; live qoder -> limit; live agy write exact; FOUND agy --mode plan wrote plan-boundary.txt once (1/9) -> PHASE4A-AGY-PLAN-MODE-FINDING.md
+- 11:33 Building phase 0 (test-only): tests/server-state-guard.test.ts + tests/fixtures/server-state.json (46 tagged state items, ceilings for process.cwd/homeDir); negative check proved it fails on new state
+- 13:16 symlink fix applied in readTokenFile (lstat+dev/ino after open); ws-auth green; full test:win 66/66, 1149 passed, exit 0
+- 13:48 Phase 1 verified: default-parallel run 70/70 files, 1190 passed (after raising registry rename retry 1s->5s)
+- 14:09 Phase2-1 verified (73/73, 1197). E2E full started with agy on snapshot C:\Users\iulia\AppData\Local\Temp/office-e2e-snapshot
+- 14:58 Codex quota 92% (reset 17:42): boss took over. Phase 2.2 verified serial 76/76 1208; 3a per-office secrets done 76/76 1209. agy E2E done: 14 pass, 1 partial (J11 responsive overflow, minor).
+- 16:03 8 review points done; full suite 80 files / 1226 passed. E2E regression started with agy on snapshot2
+- 16:12 fix: .backend-note code no longer breaks mid-word (settings.css); verified in Chrome: old CSS broke at 67/161 widths, fix 0
+- 16:23 boss ran J16-J18 at API level on current code: all PASS
+- 16:53 agy E2E regression: PASS 18/18 (agy). Boss found 1 cosmetic (Payroll partial label cut off) -> fixed with >=

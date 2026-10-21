@@ -85,9 +85,18 @@ fi
 # Claude Code reads $CLAUDE_CONFIG_DIR/settings.json when that is set (the
 # server and npm run doctor follow it too), ~/.claude/settings.json otherwise
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+# Custom environment variables may contain native Windows backslashes. Use
+# shell paths for filesystem operations and diagnostics (echo -e treats them
+# as escapes); MSYS converts standalone Python arguments at that boundary.
+if command -v cygpath >/dev/null 2>&1; then
+    CLAUDE_DIR="$(cygpath -u "$CLAUDE_DIR")"
+fi
 SETTINGS_FILE="$CLAUDE_DIR/settings.json"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && { pwd -W 2>/dev/null || pwd; })"
+# Git Bash's native spelling also works as a shell word, and stays identical
+# when MSYS converts a standalone Python argument but not an embedded command.
 TRACKER_SCRIPT="$SCRIPT_DIR/agent-tracker.sh"
+TRACKER_PY="$SCRIPT_DIR/agent-tracker.py"
 HOOK_COMMAND="bash \"$TRACKER_SCRIPT\""
 STATUS_SCRIPT="$SCRIPT_DIR/status-line.sh"
 OFFICE_HOME="${AGENT_OFFICE_HOME:-$HOME/.agent-office}"
@@ -343,6 +352,14 @@ if [ "$HOOKS" = "1" ]; then
         exit 1
     fi
 
+    if [ ! -f "$TRACKER_PY" ]; then
+        echo -e "${RED}[error]${RESET} Tracker companion not found: $TRACKER_PY"
+        echo "        Keep agent-tracker.sh and agent-tracker.py together in the checkout."
+        exit 1
+    fi
+
+    # Register the checkout directly; the Python companion is read by the
+    # interpreter, needs no executable-bit change, and is never removed by uninstall.
     chmod +x "$TRACKER_SCRIPT"
     echo -e "${GREEN}[ok]${RESET} Tracker script: $TRACKER_SCRIPT"
 elif [ ! -f "$STATUS_SCRIPT" ]; then
@@ -402,7 +419,7 @@ if [ "$HOOKS" = "1" ]; then
 echo -e "${CYAN}[...]${RESET} Registering the 19 hook events (tool calls, subagents, sessions, the main thread's turn, the task list)..."
 
 python3 - "$SETTINGS_FILE" "$HOOK_COMMAND" "$TRACKER_SCRIPT" <<'PYEOF' || merge_failed
-import json, os, shlex, sys
+import json, os, shlex, subprocess, sys
 
 settings_path, hook_command, tracker_script = sys.argv[1:4]
 SCRIPT_NAME = os.path.basename(tracker_script)
@@ -465,7 +482,14 @@ def script_path(command):
     return next((w for w in words if os.path.basename(w) == SCRIPT_NAME and os.path.basename(os.path.dirname(w)) == 'hooks'), None)
 
 def is_current(path):
-    return os.path.realpath(os.path.expanduser(path)) == os.path.realpath(tracker_script)
+    def canonical(value):
+        value = os.path.expanduser(value)
+        # Older Git Bash installs wrote /d/... paths inside commands. Native
+        # Python needs cygpath before comparing them with D:/... argv paths.
+        if os.name == 'nt' and value.startswith('/'):
+            value = subprocess.check_output(['cygpath', '-w', value], text=True).strip()
+        return os.path.normcase(os.path.realpath(value))
+    return canonical(path) == canonical(tracker_script)
 
 added = updated = unchanged = 0
 for event in EVENTS:
@@ -542,7 +566,7 @@ if [ "$STATUS_LINE" = "1" ] && [ -f "$STATUS_SCRIPT" ]; then
     echo -e "${CYAN}[...]${RESET} Registering the status line (payroll / electricity / memory meters)..."
 
     python3 - "$SETTINGS_FILE" "bash \"$STATUS_SCRIPT\"" "$OFFICE_HOME" "$STATUS_SCRIPT" <<'PYEOF' || merge_failed
-import json, os, shlex, sys
+import json, os, shlex, subprocess, sys
 
 settings_path, command, office_home, status_script = sys.argv[1:5]
 SCRIPT_NAME = os.path.basename(status_script)
@@ -573,7 +597,14 @@ def script_path(command):
     return next((w for w in words if os.path.basename(w) == SCRIPT_NAME and os.path.basename(os.path.dirname(w)) == 'hooks'), None)
 
 def is_current(path):
-    return os.path.realpath(os.path.expanduser(path)) == os.path.realpath(status_script)
+    def canonical(value):
+        value = os.path.expanduser(value)
+        # Older Git Bash installs wrote /d/... paths inside commands. Native
+        # Python needs cygpath before comparing them with D:/... argv paths.
+        if os.name == 'nt' and value.startswith('/'):
+            value = subprocess.check_output(['cygpath', '-w', value], text=True).strip()
+        return os.path.normcase(os.path.realpath(value))
+    return canonical(path) == canonical(status_script)
 
 counts = {'added': 0, 'repointed at this checkout': 0, 'wrapped': 0, 'unchanged': 0}
 

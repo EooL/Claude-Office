@@ -10,7 +10,7 @@
  * call `httpServer.listen(0)` themselves when they need a live socket.
  */
 
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import type { Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -31,12 +31,22 @@ export interface LoadOptions {
   dir?: string
   /** Extra env vars that server/index.js reads at import time. */
   env?: Record<string, string>
+  /** Disable only for tests that characterize creation of a missing home at import. */
+  seedCatalogue?: boolean
 }
 
 /** Import a fresh copy of server/index.js against a temp runtime dir. */
 export async function loadOffice(opts: LoadOptions = {}): Promise<Office> {
   const dir = opts.dir ?? mkdtempSync(join(tmpdir(), 'agent-office-test-'))
   process.env.AGENT_OFFICE_HOME = dir
+  // start() refreshes a missing catalogue by probing installed real CLIs.
+  // A fresh fixture prevents test startup from consuming provider resources or
+  // depending on the developer's installations. Explicit catalogues win.
+  if (opts.seedCatalogue !== false) {
+    mkdirSync(dir, { recursive: true })
+    const catalogue = join(dir, 'catalogue.json')
+    if (!existsSync(catalogue)) writeFileSync(catalogue, JSON.stringify({ builtAt: Date.now(), models: [] }))
+  }
   // The registry roster (server/sessions.js) reads Claude Code's own
   // ~/.claude/sessions when started; a test office reads a (normally absent)
   // directory under its runtime dir instead, so the sessions of whoever runs

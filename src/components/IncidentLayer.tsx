@@ -16,6 +16,7 @@
  */
 
 import React, { useEffect, useSyncExternalStore } from 'react'
+import { useEventMode } from '../eventMode'
 import { useIncident, daysSinceLastIncident, shouldPlayAlarm } from '../incident'
 import {
   incidentAssetUrl, probeIncidentAssets, subscribeIncidentAssets, type IncidentAssetName,
@@ -52,6 +53,7 @@ const DaysSinceSign: React.FC<{ days: number; incident: boolean }> = ({ days, in
 
 const IncidentLayer: React.FC = () => {
   const incident = useIncident()
+  const eventMode = useEventMode()
   const active = incident.variant === 'incident'
 
   const beacon = useIncidentAsset('beacon')
@@ -91,9 +93,9 @@ const IncidentLayer: React.FC = () => {
 
           {/* Status page on the wall TV */}
           {screen && (
-            <div className="incident-tv" style={{ left: `${TV_SCREEN.x}%`, top: `${TV_SCREEN.y}%` }} title="Status page: ROLLBACK">
-              <img src={screen} alt="Rollback in progress" draggable={false} />
-              <span className="incident-tv-label">ROLLBACK</span>
+            <div className="incident-tv" style={{ left: `${TV_SCREEN.x}%`, top: `${TV_SCREEN.y}%` }} title={eventMode === 'real' ? 'Observed incident' : 'Emulated rollback'}>
+              {eventMode === 'emulated' && <img src={screen} alt="Emulated rollback" draggable={false} />}
+              <span className="incident-tv-label">{eventMode === 'real' ? 'INCIDENT' : 'ROLLBACK'}</span>
             </div>
           )}
 

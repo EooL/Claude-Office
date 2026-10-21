@@ -1,0 +1,246 @@
+/**
+ * chat-db.js - SQLite-backed chat history for Agent Office
+ *
+ * DB location: ~/.agent-office/chat.db (or $AGENT_OFFICE_HOME/chat.db)
+ * Uses WAL mode for concurrent read performance.
+ */
+
+import Database from 'better-sqlite3'
+import { join } from 'path'
+import { mkdirSync, chmodSync, existsSync } from 'fs'
+
+// ---------------------------------------------------------------------------
+// Initialise DB
+// ---------------------------------------------------------------------------
+
+/** Distinct emoji a message can carry; a toggle past this is ignored. */
+export const MAX_REACTIONS = 20
+
+/** Open one office's database; statements and mutations belong to this instance. */
+export function openChatDb(home) {
+  const RUNTIME_DIR = home
+  try { mkdirSync(RUNTIME_DIR, { recursive: true, mode: 0o700 }) } catch {}
+  // mkdirSync's mode is ignored for a dir that already exists (the installer or
+  // start-office.sh may have made it 0755), so tighten it unconditionally.
+  try { chmodSync(RUNTIME_DIR, 0o700) } catch {}
+
+  const DB_PATH = join(RUNTIME_DIR, 'chat.db')
+
+  // chat.db holds the boss's prompts and Claude's replies (logPrompts), so it
+  // must be private to this user. SQLite creates the db, and later its -wal and
+  // -shm siblings, under the process umask — 0644 by default — and never
+  // through writePrivate. Create them under a 0077 umask so they start 0600,
+  // then chmod any that already exist (an older 0644 build, an interrupted run)
+  // so an upgrade repairs them too.
+  const prevUmask = process.platform === 'win32' ? null : process.umask(0o077)
+  let db
+  try {
+    db = new Database(DB_PATH)
+    // WAL mode for better concurrent read/write performance
+    db.pragma('journal_mode = WAL')
+  } finally {
+    if (prevUmask !== null) process.umask(prevUmask)
+  }
+  if (process.platform !== 'win32') {
+    for (const name of ['chat.db', 'chat.db-wal', 'chat.db-shm']) {
+      const file = join(RUNTIME_DIR, name)
+      try { if (existsSync(file)) chmodSync(file, 0o600) } catch {}
+    }
+  }
+
+  db.exec(
+    'CREATE TABLE IF NOT EXISTS messages (' +
+    '  id         INTEGER PRIMARY KEY AUTOINCREMENT,' +
+    '  sender     TEXT    NOT NULL,' +
+    '  role       TEXT    NOT NULL DEFAULT \'default\',' +
+    '  text       TEXT    NOT NULL,' +
+    '  timestamp  INTEGER NOT NULL,' +
+    '  is_system  INTEGER NOT NULL DEFAULT 0,' +
+    '  reactions  TEXT    NOT NULL DEFAULT \'[]\',' +
+    '  thread_id  INTEGER,' +
+    '  seen       INTEGER NOT NULL DEFAULT 0' +
+    ')'
+  )
+
+  // Columns added for agent-to-agent messages — migrate older databases in place
+  const existingCols = new Set(db.prepare('PRAGMA table_info(messages)').all().map(c => c.name))
+  for (const [col, ddl] of [
+    ['recipient', 'recipient TEXT'],
+    ['msg_type',  'msg_type TEXT'],
+    ['read_at',   'read_at INTEGER'],
+  ]) {
+    if (!existingCols.has(col)) db.exec(`ALTER TABLE messages ADD COLUMN ${ddl}`)
+  }
+
+  // ---------------------------------------------------------------------------
+  // Prepared statements
+  // ---------------------------------------------------------------------------
+
+  const stmtInsert = db.prepare(
+    'INSERT INTO messages (sender, role, text, timestamp, is_system, thread_id, recipient, msg_type) ' +
+    'VALUES (@sender, @role, @text, @timestamp, @isSystem, @threadId, @recipient, @msgType)'
+  )
+
+  // The transcript rows — the boss's prompts and Claude's replies the session
+  // hooks store (msg_type 'prompt' / 'reply') — are left out of every read
+  // unless the caller asks for them (@transcript = 1: the office's own token
+  // was presented). Everything else on the machine sees the chat as before.
+  const TRANSCRIPT_FILTER = "(@transcript = 1 OR msg_type IS NULL OR msg_type NOT IN ('prompt', 'reply'))"
+
+  const stmtGetAll = db.prepare(
+    'SELECT * FROM (SELECT * FROM messages ' +
+    `  WHERE ${TRANSCRIPT_FILTER} ` +
+    '  ORDER BY timestamp DESC, id DESC LIMIT @limit) ' +
+    'ORDER BY timestamp ASC, id ASC'
+  )
+
+  const stmtGetSince = db.prepare(
+    'SELECT * FROM messages ' +
+    `WHERE timestamp > @since AND ${TRANSCRIPT_FILTER} ` +
+    'ORDER BY timestamp ASC, id ASC ' +
+    'LIMIT @limit'
+  )
+
+  const stmtGetForRecipient = db.prepare(
+    'SELECT * FROM (SELECT * FROM messages ' +
+    `  WHERE recipient = @recipient COLLATE NOCASE AND timestamp > @since AND ${TRANSCRIPT_FILTER} ` +
+    '  ORDER BY timestamp DESC, id DESC LIMIT @limit) ' +
+    'ORDER BY timestamp ASC, id ASC'
+  )
+
+  const stmtMarkInboxRead = db.prepare(
+    'UPDATE messages SET read_at = @now ' +
+    'WHERE read_at IS NULL AND recipient = @recipient COLLATE NOCASE'
+  )
+
+  const stmtMarkSeen = db.prepare(
+    'UPDATE messages SET seen = 1 WHERE id = @id'
+  )
+
+  const stmtGetReactions = db.prepare(
+    'SELECT reactions FROM messages WHERE id = @id'
+  )
+
+  const stmtSetReactions = db.prepare(
+    'UPDATE messages SET reactions = @reactions WHERE id = @id'
+  )
+
+  const stmtGetThread = db.prepare(
+    'SELECT * FROM messages ' +
+    'WHERE thread_id = @threadId ' +
+    'ORDER BY timestamp ASC, id ASC'
+  )
+
+  const stmtGetById = db.prepare(
+    'SELECT * FROM messages WHERE id = @id'
+  )
+
+  // ---------------------------------------------------------------------------
+  // Public API
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Insert a new message and return it with its generated id.
+   * @param {{ sender: string, role?: string, text: string, isSystem?: boolean, threadId?: number,
+   *           recipient?: string, msgType?: string }} opts
+   */
+  function addMessage({ sender, role = 'default', text, isSystem = false, threadId = null, recipient = null, msgType = null }) {
+    const timestamp = Date.now()
+    const info = stmtInsert.run({
+      sender,
+      role,
+      text,
+      timestamp,
+      isSystem: isSystem ? 1 : 0,
+      threadId: threadId ?? null,
+      recipient: recipient ?? null,
+      msgType: msgType ?? null,
+    })
+    return stmtGetById.get({ id: info.lastInsertRowid })
+  }
+
+  /**
+   * Retrieve recent messages.
+   * @param {{ since?: number, limit?: number, recipient?: string, transcript?: boolean }} opts
+   *   recipient  — only messages addressed to this agent (case-insensitive)
+   *   transcript — include the prompt / reply rows (msg_type 'prompt' | 'reply');
+   *                off by default, see TRANSCRIPT_FILTER
+   */
+  function getMessages({ since = 0, limit = 50, recipient = null, transcript = false } = {}) {
+    const params = { since, limit, transcript: transcript ? 1 : 0 }
+    if (recipient) {
+      return stmtGetForRecipient.all({ ...params, recipient })
+    }
+    if (since) {
+      return stmtGetSince.all(params)
+    }
+    return stmtGetAll.all(params)
+  }
+
+  /**
+   * Mark every directed message to any of these names as read by the recipient.
+   * @param {string[]} names — the recipient's id, name, role, ... as addressed
+   */
+  function markInboxRead(names) {
+    const now = Date.now()
+    const tx = db.transaction(list => {
+      for (const recipient of list) stmtMarkInboxRead.run({ recipient, now })
+    })
+    tx(names.filter(Boolean))
+  }
+
+  /**
+   * Mark a message as seen by the Claude watcher.
+   * @param {number} messageId
+   */
+  function markSeen(messageId) {
+    stmtMarkSeen.run({ id: messageId })
+  }
+
+  /**
+   * Toggle an emoji reaction on a message.
+   * Adds the emoji if not present, removes it if already there. A message holds
+   * at most MAX_REACTIONS distinct emoji: a new one past that is not added (the
+   * array would otherwise grow without bound, and every change is re-broadcast
+   * whole to every client).
+   * @param {number} messageId
+   * @param {string} emoji
+   * @returns {string[]} Updated reactions array
+   */
+  function addReaction(messageId, emoji) {
+    const row = stmtGetReactions.get({ id: messageId })
+    if (!row) return []
+
+    let reactions
+    try {
+      reactions = JSON.parse(row.reactions)
+      if (!Array.isArray(reactions)) reactions = []
+    } catch {
+      reactions = []
+    }
+
+    const idx = reactions.indexOf(emoji)
+    if (idx === -1) {
+      if (reactions.length >= MAX_REACTIONS) return reactions
+      reactions.push(emoji)
+    } else {
+      reactions.splice(idx, 1)
+    }
+
+    stmtSetReactions.run({ id: messageId, reactions: JSON.stringify(reactions) })
+    return reactions
+  }
+
+  /**
+   * Retrieve all messages belonging to a thread.
+   * @param {number} threadId
+   */
+  function getThread(threadId) {
+    return stmtGetThread.all({ threadId })
+  }
+
+  return {
+    db, MAX_REACTIONS, addMessage, getMessages, markInboxRead, markSeen, addReaction, getThread,
+    close() { if (db.open) db.close() },
+  }
+}

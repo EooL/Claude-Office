@@ -5,15 +5,27 @@
  * a fake opener, and `npm run rotate-token` (scripts/rotate-token.mjs).
  */
 
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { delimiter, join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { listen, loadOffice, removeOffice, type Office } from './helpers'
 import { openOffice, openerFor, REDIRECT_FILE_NAME } from '../scripts/open-office.mjs'
 import { rotateToken } from '../scripts/rotate-token.mjs'
+
+// Exercise a real opener child process without depending on POSIX executable
+// scripts (Windows CreateProcess cannot launch their shebangs).
+vi.mock('node:child_process', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:child_process')>()
+  return { ...actual, spawn: (command: string, args: string[], options: any) => {
+    const script = options?.env?.AGENT_OFFICE_TEST_OPENER
+    return command === 'xdg-open' && script
+      ? actual.spawn(process.execPath, [script, ...args], options)
+      : actual.spawn(command, args, options)
+  } }
+})
 
 const require = createRequire(import.meta.url)
 const h = require('../electron/helpers.cjs')
@@ -25,7 +37,7 @@ function tempDir(prefix = 'agent-office-open-') {
   dirs.push(dir)
   return dir
 }
-afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }) })
+afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }) })
 
 /** A writable stream stand-in that keeps what was written. */
 function sink() {
@@ -35,15 +47,16 @@ function sink() {
 
 function fakeOpener(bin: string, name: string, exitCode: number, log: string) {
   mkdirSync(bin, { recursive: true })
-  writeFileSync(join(bin, name), `#!/usr/bin/env bash\nprintf '%s\\n' "$@" >> "${log}"\nexit ${exitCode}\n`)
-  chmodSync(join(bin, name), 0o755)
+  const script = join(bin, `${name}.cjs`)
+  writeFileSync(script, `require('node:fs').appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join('\\n') + '\\n'); process.exit(${exitCode})`)
+  return script
 }
 
 describe('electron/helpers.cjs: the office link', () => {
   it('runtimeDirFromEnv follows AGENT_OFFICE_HOME like the server', () => {
     expect(h.runtimeDirFromEnv({ AGENT_OFFICE_HOME: '/tmp/x' }, '/home/me')).toBe('/tmp/x')
-    expect(h.runtimeDirFromEnv({}, '/home/me')).toBe('/home/me/.agent-office')
-    expect(h.runtimeDirFromEnv({ AGENT_OFFICE_HOME: '' }, '/home/me')).toBe('/home/me/.agent-office')
+    expect(h.runtimeDirFromEnv({}, '/home/me')).toBe(join('/home/me', '.agent-office'))
+    expect(h.runtimeDirFromEnv({ AGENT_OFFICE_HOME: '' }, '/home/me')).toBe(join('/home/me', '.agent-office'))
   })
 
   it('readOfficeToken: a well-formed token (trailing newline allowed), else null', () => {
@@ -79,7 +92,16 @@ describe('electron/helpers.cjs: the office link', () => {
     expect(h.redirectPage('http://x/"><script>alert(1)</script>')).not.toContain('<script>alert(1)')
   })
 
-  it('writeRedirectPage writes it 0600 and replaces a planted symlink instead of writing through it', () => {
+  it('writeRedirectPage writes a redirect page with platform-supported permissions', () => {
+    const file = join(tempDir(), REDIRECT_FILE_NAME)
+    h.writeRedirectPage(file, h.officeLink('http://127.0.0.1:3334', TOKEN))
+    if (process.platform !== 'win32') expect(statSync(file).mode & 0o777).toBe(0o600)
+    expect(readFileSync(file, 'utf8')).toContain(TOKEN)
+  })
+
+  // Windows file symlinks require Developer Mode or elevation, neither part of
+  // this runner's contract. The ordinary redirect write is tested above.
+  it.skipIf(process.platform === 'win32')('replaces a planted symlink instead of writing through it', () => {
     const dir = tempDir()
     const other = join(tempDir(), 'victim')
     writeFileSync(other, 'untouched')
@@ -152,7 +174,7 @@ describe('npm run open (scripts/open-office.mjs)', () => {
       writeFileSync(join(bin, 'xdg-open'), `#!/bin/sh\necho "$@" >> "${openLog}"\n`, { mode: 0o755 })
       const out = sink()
       const err = sink()
-      const code = await openOffice({ env: envFor({ AGENT_OFFICE_PORT: String(squatPort), PATH: `${bin}:${process.env.PATH}` }), platform: 'linux', out, err })
+      const code = await openOffice({ env: envFor({ AGENT_OFFICE_PORT: String(squatPort), PATH: `${bin}${delimiter}${process.env.PATH}` }), platform: 'linux', out, err })
       expect(code).toBe(1)
       expect(out.text).toBe('')
       expect(err.text).toContain('it is not this office')
@@ -172,26 +194,26 @@ describe('npm run open (scripts/open-office.mjs)', () => {
   it('opens a 0600 redirect page in the runtime dir, so the token is never on the opener\'s command line', async () => {
     const bin = tempDir('agent-office-bin-')
     const log = join(bin, 'opened.log')
-    fakeOpener(bin, 'xdg-open', 0, log)
+    const opener = fakeOpener(bin, 'xdg-open', 0, log)
     const out = sink()
-    const code = await openOffice({ env: envFor({ PATH: `${bin}:${process.env.PATH}` }), platform: 'linux', out, err: sink() })
+    const code = await openOffice({ env: envFor({ PATH: `${bin}${delimiter}${process.env.PATH}`, AGENT_OFFICE_TEST_OPENER: opener }), platform: 'linux', out, err: sink() })
     expect(code).toBe(0)
     const args = readFileSync(log, 'utf8').trim().split('\n')
     const page = join(home, REDIRECT_FILE_NAME)
-    expect(args).toEqual([`file://${page}`])
+    expect(args).toEqual([pathToFileURL(page).href])
     expect(args.join(' ')).not.toContain(office.server.AUTH_TOKEN)
-    expect(statSync(page).mode & 0o777).toBe(0o600)
+    if (process.platform !== 'win32') expect(statSync(page).mode & 0o777).toBe(0o600)
     expect(readFileSync(page, 'utf8')).toContain(`http://127.0.0.1:${port}/#token=${office.server.AUTH_TOKEN}`)
     expect(out.text).toContain('Opened it in your browser')
-    expect(fileURLToPath(`file://${page}`)).toBe(page)
+    expect(fileURLToPath(args[0])).toBe(page)
   })
 
   it('an opener that fails: the link is printed to paste, and that is still a success', async () => {
     const bin = tempDir('agent-office-bin-')
-    fakeOpener(bin, 'xdg-open', 3, join(bin, 'opened.log'))
+    const opener = fakeOpener(bin, 'xdg-open', 3, join(bin, 'opened.log'))
     const out = sink()
     const err = sink()
-    expect(await openOffice({ env: envFor({ PATH: `${bin}:${process.env.PATH}` }), platform: 'linux', out, err })).toBe(0)
+    expect(await openOffice({ env: envFor({ PATH: `${bin}${delimiter}${process.env.PATH}`, AGENT_OFFICE_TEST_OPENER: opener }), platform: 'linux', out, err })).toBe(0)
     expect(out.text).toContain(`#token=${office.server.AUTH_TOKEN}`)
     expect(err.text).toContain('Could not open a browser automatically')
   })
@@ -248,7 +270,14 @@ describe('npm run rotate-token (scripts/rotate-token.mjs)', () => {
     expect(existsSync(file)).toBe(false)
     expect(out.text).toContain('the next start writes a new office token')
     const next = await loadOffice({ dir: home })
-    expect(next.server.AUTH_TOKEN).not.toBe(TOKEN)
-    expect(next.server.REUSED_TOKEN).toBeNull()
+    try {
+      expect(next.server.AUTH_TOKEN).not.toBe(TOKEN)
+      expect(next.server.REUSED_TOKEN).toBeNull()
+    } finally {
+      // SQLite mappings prevent removing this caller-owned fixture on Windows.
+      const { default: db } = await import('../server/chat-db.js')
+      db.close()
+      removeOffice(next)
+    }
   })
 })

@@ -9,9 +9,9 @@
  */
 
 import { execFileSync, spawnSync } from 'node:child_process'
-import { accessSync, constants, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, describe, expect, it } from 'vitest'
 
@@ -221,13 +221,21 @@ describe('hooks/hooks.json × agent-tracker.sh', () => {
 
   // An AGENT_OFFICE_HOME with no auth-token, so the script never finds a server to call
   const emptyHome = mkdtempSync(join(tmpdir(), 'agent-office-plugin-'))
+  const bin = join(emptyHome, 'bin')
+  mkdirSync(bin)
+  // Contract fixtures must never post even unsigned events to the user's office.
+  writeFileSync(join(bin, 'curl'), '#!/usr/bin/env bash\nexit 0\n')
+  chmodSync(join(bin, 'curl'), 0o755)
+  const bashEnv = join(emptyHome, 'bash-env.sh')
+  writeFileSync(bashEnv, 'export PATH="$(cygpath -u "$TEST_FAKE_BIN"):$PATH"\n')
   afterAll(() => rmSync(emptyHome, { recursive: true, force: true }))
 
   function runTracker(payload: object) {
     const r = spawnSync('bash', [TRACKER], {
       input: JSON.stringify(payload),
       encoding: 'utf8',
-      env: { ...process.env, AGENT_OFFICE_HOME: emptyHome },
+      env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, AGENT_OFFICE_HOME: emptyHome,
+        ...(process.platform === 'win32' ? { BASH_ENV: bashEnv, TEST_FAKE_BIN: bin } : {}) },
       timeout: 10_000,
     })
     return { status: r.status, stdout: r.stdout, stderr: r.stderr }
@@ -254,7 +262,7 @@ describe('hooks/hooks.json × agent-tracker.sh', () => {
 })
 
 describe('commands/office.md', () => {
-  const source = readFileSync(join(ROOT, 'commands', 'office.md'), 'utf8')
+  const source = readFileSync(join(ROOT, 'commands', 'office.md'), 'utf8').replaceAll('\r\n', '\n')
 
   it('has frontmatter with a description, so /agent-office:office is listed', () => {
     const m = /^---\n([\s\S]*?)\n---\n/.exec(source)
@@ -281,7 +289,7 @@ describe('commands/office.md', () => {
 // installed (CI installs it), otherwise skip with a note rather than fail.
 const claudeVersion = (() => {
   try {
-    return execFileSync('claude', ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 30_000 }).trim()
+    return execFileSync('claude', ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 }).trim()
   } catch {
     return null
   }
@@ -294,7 +302,7 @@ describe('claude plugin validate', () => {
       out = execFileSync('claude', ['plugin', 'validate', ROOT, '--strict', '--json'], {
         encoding: 'utf8',
         env: { ...process.env, DISABLE_AUTOUPDATER: '1' },
-        timeout: 60_000,
+        timeout: 20_000,
       })
     } catch (err: any) {
       throw new Error(`claude plugin validate failed (exit ${err.status}):\n${err.stdout}\n${err.stderr}`)
@@ -313,7 +321,7 @@ describe('claude plugin validate', () => {
     const out = execFileSync('claude', ['plugin', 'validate', join(ROOT, '.claude-plugin', 'plugin.json'), '--strict', '--json'], {
       encoding: 'utf8',
       env: { ...process.env, DISABLE_AUTOUPDATER: '1' },
-      timeout: 60_000,
+      timeout: 20_000,
     })
     const report = JSON.parse(out)
     expect(report.success, JSON.stringify(report, null, 2)).toBe(true)

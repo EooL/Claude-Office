@@ -1,0 +1,315 @@
+/* ===== SETTINGS PANEL — settings dialog and first-run start screen (src/components/SettingsPanel.tsx) ===== */
+
+.backend-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(8, 9, 11, 0.82);
+}
+.backend-card {
+  width: 100%;
+  max-width: 460px;
+  max-height: 100%;
+  overflow-y: auto;
+  padding: 20px;
+  background: var(--meter-bg, #15171a);
+  border: 1px solid var(--meter-border, #2b2e33);
+  border-radius: 8px;
+  color: var(--meter-fg, #e6e6e6);
+  font-size: 13px;
+}
+.backend-card h2 { margin: 0 0 6px; font-size: 16px; }
+.backend-lead { margin: 0 0 14px; color: var(--meter-sub, #8b8d91); }
+.backend-list { list-style: none; margin: 0 0 14px; padding: 0; display: grid; gap: 6px; }
+.backend-option {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--meter-tile, #1d2024);
+  border: 1px solid var(--meter-border, #2b2e33);
+  border-radius: 6px;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.backend-option:hover { border-color: var(--meter-electric, #4fa3ff); }
+.backend-option.is-focused { border-color: var(--meter-electric, #4fa3ff); box-shadow: 0 0 0 1px var(--meter-electric, #4fa3ff); }
+.backend-option.is-missing .backend-name { color: var(--meter-sub, #8b8d91); }
+.backend-option:focus-visible { outline: 2px solid var(--meter-electric-hi, #9ad1ff); outline-offset: 2px; }
+.backend-badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; white-space: nowrap; }
+.backend-badge.ok { color: var(--meter-ok, #2bac76); border: 1px solid var(--meter-ok, #2bac76); }
+.backend-badge.missing { color: var(--meter-warn, #f0b429); border: 1px solid var(--meter-warn, #f0b429); }
+.backend-help {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  background: var(--meter-tip-bg, #0f1113);
+  border-left: 3px solid var(--meter-warn, #f0b429);
+  border-radius: 4px;
+}
+.backend-help p { margin: 0 0 6px; }
+.backend-help ol { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
+.backend-help a { color: var(--meter-electric-hi, #9ad1ff); word-break: break-all; }
+.backend-help code, .backend-note code { background: var(--meter-tile, #1d2024); padding: 1px 4px; border-radius: 3px; word-break: break-all; }
+/* The note only ever names the short `npm run open`: keep it whole instead of breaking it mid-word ("ope" / "n"). */
+.backend-note code { word-break: normal; white-space: nowrap; }
+.backend-note { color: var(--meter-sub, #8b8d91); margin: 0 0 10px; }
+.backend-error { color: var(--meter-danger, #ff5f57); margin: 0 0 10px; }
+.backend-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.backend-primary, .backend-secondary {
+  padding: 8px 14px;
+  border-radius: 6px;
+  font: inherit;
+  cursor: pointer;
+}
+.backend-primary { background: var(--meter-electric, #4fa3ff); border: 1px solid var(--meter-electric, #4fa3ff); color: #08111c; font-weight: 600; }
+.backend-primary:disabled { opacity: 0.45; cursor: not-allowed; }
+.backend-secondary { background: transparent; border: 1px solid var(--meter-border, #2b2e33); color: inherit; }
+
+.backend-logo { flex: none; width: 20px; height: 20px; border-radius: 4px; object-fit: contain; }
+.backend-logo-initial { display: inline-flex; align-items: center; justify-content: center; color: #fff; font-size: 12px; font-weight: 700; }
+.backend-name { flex: 1; }
+.backend-badge.current { color: var(--meter-electric-hi, #9ad1ff); border: 1px solid var(--meter-electric, #4fa3ff); }
+.settings-card { max-width: 480px; }
+.settings-section + .settings-section { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--meter-border, #2b2e33); }
+.settings-section-title { margin: 0 0 4px; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--meter-label, #6b6e75); }
+.settings-footer { display: flex; justify-content: flex-end; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--meter-border, #2b2e33); }
+
+.settings-agents { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.settings-agents li { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.settings-agents label { color: var(--meter-fg, #e6e6e6); }
+.settings-agents select {
+  min-width: 170px;
+  padding: 5px 8px;
+  background: var(--meter-tile, #1d2024);
+  border: 1px solid var(--meter-border, #2b2e33);
+  border-radius: 6px;
+  color: inherit;
+  font: inherit;
+}
+.settings-agents select:focus-visible { outline: 2px solid var(--meter-electric-hi, #9ad1ff); outline-offset: 2px; }
+
+/* ===== tabs ===== */
+.settings-tabs { display: flex; gap: 4px; margin: 0 0 14px; border-bottom: 1px solid var(--meter-border, #2b2e33); }
+.settings-tab {
+  padding: 7px 14px;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--meter-sub, #8b8d91);
+  font: inherit;
+  cursor: pointer;
+}
+.settings-tab:hover { color: var(--meter-fg, #e6e6e6); }
+.settings-tab.is-active { color: var(--meter-fg, #e6e6e6); border-bottom-color: var(--meter-electric, #4fa3ff); }
+.settings-tab:focus-visible { outline: 2px solid var(--meter-electric-hi, #9ad1ff); outline-offset: -2px; }
+
+/* ===== org chart (src/components/OrgChart.tsx) ===== */
+.settings-card { max-width: 560px; }
+/* Team is master-detail: wider and a fixed height, the two panes scroll on their own */
+.settings-card.settings-card-team { box-sizing: border-box; max-width: min(1000px, 96%); height: min(600px, 100%); }
+.settings-card > .settings-team-panel { display: flex; flex-direction: column; overflow: hidden; padding-right: 0; }
+.org-tree, .org-branch { list-style: none; margin: 0; padding: 0; }
+.org-branch { margin-left: 14px; padding-left: 14px; border-left: 1px solid var(--meter-border, #2b2e33); }
+.org-branch > li { position: relative; padding-top: 6px; }
+.org-branch > li::before {
+  content: '';
+  position: absolute;
+  left: -14px;
+  top: 22px;
+  width: 12px;
+  border-top: 1px solid var(--meter-border, #2b2e33);
+}
+.org-node {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 10px;
+  background: var(--meter-tile, #1d2024);
+  border: 1px solid var(--meter-border, #2b2e33);
+  border-radius: 6px;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+button.org-node { cursor: pointer; }
+button.org-node:hover { border-color: var(--meter-electric, #4fa3ff); }
+button.org-node:focus-visible { outline: 2px solid var(--meter-electric-hi, #9ad1ff); outline-offset: 2px; }
+.org-node.is-selected { border-color: var(--meter-electric, #4fa3ff); box-shadow: 0 0 0 1px var(--meter-electric, #4fa3ff); }
+.org-boss { background: transparent; border-style: dashed; color: var(--meter-sub, #8b8d91); }
+.org-service { font-size: 11px; color: var(--meter-electric-hi, #9ad1ff); white-space: nowrap; }
+.org-service.is-default { color: var(--meter-sub, #8b8d91); }
+.org-detail { margin-top: 14px; padding: 12px; background: var(--meter-tip-bg, #0f1113); border-radius: 6px; }
+.org-detail-title { margin: 0 0 10px; font-size: 14px; }
+.org-role { margin-left: 6px; font-size: 11px; font-weight: normal; color: var(--meter-sub, #8b8d91); }
+.org-field { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.org-field select, .org-field input {
+  width: 62%;
+  padding: 6px 8px;
+  background: var(--meter-tile, #1d2024);
+  border: 1px solid var(--meter-border, #2b2e33);
+  border-radius: 6px;
+  color: inherit;
+  font: inherit;
+}
+.org-field select:focus-visible, .org-field input:focus-visible { outline: 2px solid var(--meter-electric-hi, #9ad1ff); outline-offset: 2px; }
+.org-hint { margin: 4px 0 0; font-size: 12px; color: var(--meter-sub, #8b8d91); }
+
+/* The title, tabs and Close stay put; the panel between them scrolls */
+.settings-card { display: flex; flex-direction: column; overflow: hidden; }
+.settings-card > .settings-section { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-right: 4px; }
+.settings-card > .settings-footer { flex: none; }
+.settings-card, .settings-card > .settings-section { scrollbar-width: thin; scrollbar-color: var(--meter-border, #2b2e33) transparent; }
+
+/* The chart scrolls on its own so the selected agent's settings stay in view under it */
+.org-chart { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; container-type: inline-size; }
+.org-split { flex: 1; min-height: 0; display: grid; grid-template-columns: 230px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: 12px; }
+.org-left { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.org-tree { flex: 1; min-height: 0; overflow-y: auto; padding-right: 4px; scrollbar-width: thin; scrollbar-color: var(--meter-border, #2b2e33) transparent; }
+.org-right { min-width: 0; min-height: 0; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--meter-border, #2b2e33) transparent; }
+/* The unsaved-edit confirm stays in view above the sticky CV header */
+.org-right > .jd-confirm { position: sticky; top: 0; z-index: 3; margin: 0; padding: 6px 12px; background: var(--meter-tip-bg, #0f1113); border: 1px solid var(--meter-warn, #d9a441); border-radius: 6px; }
+.org-node { flex-wrap: wrap; }
+.org-meta { display: inline-flex; align-items: center; gap: 6px; }
+.org-meta .jd-status { padding: 0 6px; font-size: 10px; }
+/* Narrow (dialog under ~860px): the panes stack, the tree keeps a limited height and its own scroll */
+@container (max-width: 820px) {
+  .org-split { display: block; overflow-y: auto; }
+  .org-left { max-height: 220px; margin-bottom: 12px; }
+  .org-right { overflow: visible; }
+}
+
+/* ===== recommendation (src/components/OrgChart.tsx) ===== */
+.org-rec { margin: 10px 0 8px; padding: 10px; background: var(--meter-tile, #1d2024); border-left: 3px solid var(--meter-ok, #2bac76); border-radius: 4px; }
+.org-rec-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px; }
+.org-rec-pick { color: var(--meter-ok, #2bac76); font-size: 12px; }
+.org-rec .backend-secondary { margin-top: 4px; padding: 4px 12px; }
+.org-rec .backend-secondary:disabled { opacity: 0.55; cursor: default; }
+.org-field select:disabled, .org-field input:disabled { opacity: 0.55; cursor: not-allowed; }
+
+/* ===== themed dropdown and model search (src/components/ThemedSelect.tsx, ModelCombo.tsx) ===== */
+.ts { position: relative; width: 62%; }
+.org-field .ts input, .org-field .ts-button { width: 100%; }
+.ts-button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--meter-tile, #1d2024);
+  border: 1px solid var(--meter-border, #2b2e33);
+  border-radius: 6px;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ts-button:hover:not(:disabled), .ts-button[aria-expanded="true"] { border-color: var(--meter-electric, #4fa3ff); }
+.ts-button:focus-visible { outline: 2px solid var(--meter-electric-hi, #9ad1ff); outline-offset: 2px; }
+.ts-button:disabled { opacity: 0.55; cursor: not-allowed; }
+.ts-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ts-list {
+  position: absolute;
+  z-index: 30;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  max-height: 210px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--meter-bg, #15171a);
+  border: 1px solid var(--meter-electric, #4fa3ff);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  scrollbar-width: thin;
+  scrollbar-color: var(--meter-border, #2b2e33) transparent;
+}
+.ts-option { padding: 6px 8px; border-radius: 4px; color: var(--meter-fg, #e6e6e6); cursor: pointer; }
+.ts-option.is-active { background: var(--meter-tile, #1d2024); }
+.ts-option[aria-selected="true"] { color: var(--meter-electric-hi, #9ad1ff); }
+.ts-option[aria-disabled="true"] { opacity: 0.45; cursor: not-allowed; }
+.ts-model { display: grid; gap: 1px; }
+.ts-model-id { font-weight: 600; word-break: break-all; }
+.ts-model-label { font-size: 11px; color: var(--meter-sub, #8b8d91); }
+.ts-model-note { font-size: 11px; color: var(--meter-sub, #8b8d91); }
+.ts-more { padding: 6px 8px; font-size: 11px; color: var(--meter-sub, #8b8d91); }
+
+/* ===== General tab, services switches, brains (SettingsPanel, BrainsPanel, BrainChain) ===== */
+/* a service row: the pick button takes the row, the switch sits at its end */
+.backend-option { padding: 0; }
+.backend-option .backend-pick { flex: 1; display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: transparent; border: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; min-width: 0; }
+.backend-option .backend-pick:focus-visible { outline: 2px solid var(--meter-electric-hi, #9ad1ff); outline-offset: -2px; border-radius: 6px; }
+.backend-list li.is-off .backend-name, .backend-list li.is-off .backend-logo { opacity: 0.45; }
+.switch { flex: none; position: relative; width: 34px; height: 18px; margin-right: 10px; padding: 0; background: var(--meter-track, #2c2f35); border: 1px solid var(--meter-border, #2b2e33); border-radius: 10px; cursor: pointer; }
+.switch.is-on { background: var(--meter-ok, #2bac76); border-color: var(--meter-ok, #2bac76); }
+.switch-knob { position: absolute; top: 1px; left: 1px; width: 14px; height: 14px; background: #fff; border-radius: 50%; transition: transform 0.15s; }
+.switch.is-on .switch-knob { transform: translateX(16px); }
+.switch:disabled { opacity: 0.5; cursor: not-allowed; }
+.switch:focus-visible { outline: 2px solid var(--meter-electric-hi, #9ad1ff); outline-offset: 2px; }
+
+.brain-chain, .brain-steps { list-style: none; margin: 8px 0 4px; padding: 0; display: grid; gap: 6px; }
+.brain-chain li, .brain-step { display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; background: var(--meter-tile, #1d2024); border-radius: 6px; }
+.brain-chain li.is-blocked, .brain-step.is-blocked { border-left: 3px solid var(--meter-warn, #f0b429); }
+.brain-n { flex: none; width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; background: var(--meter-track, #2c2f35); font-size: 11px; color: var(--meter-sub, #8b8d91); }
+.brain-chain-text, .brain-auto { flex: 1; min-width: 0; word-break: break-word; }
+.brain-blocked-inline { color: var(--meter-warn, #f0b429); }
+.brain-step { flex-wrap: wrap; }
+.brain-fields { flex: 1; min-width: 0; display: grid; gap: 6px; }
+.brain-fields .ts { width: 100%; }
+.brain-blocked { flex-basis: 100%; padding-left: 26px; color: var(--meter-warn, #f0b429); font-size: 12px; }
+.brain-actions { display: flex; gap: 4px; }
+.brain-icon { width: 24px; height: 24px; padding: 0; background: transparent; border: 1px solid var(--meter-border, #2b2e33); border-radius: 4px; color: inherit; cursor: pointer; }
+.brain-icon:disabled { opacity: 0.35; cursor: default; }
+.brain-link { background: none; border: 0; padding: 0 0 0 8px; color: var(--meter-electric-hi, #9ad1ff); font: inherit; cursor: pointer; text-decoration: underline; }
+.brain-toolbar { display: flex; gap: 8px; margin: 8px 0; }
+.brain-save { margin-top: 12px; }
+.brain-foot { margin-top: 10px; }
+.org-rec-actions { display: flex; align-items: center; gap: 4px; }
+.brains .org-field .ts input { width: 100%; padding: 6px 8px; background: var(--meter-tile, #1d2024); border: 1px solid var(--meter-border, #2b2e33); border-radius: 6px; color: inherit; font: inherit; }
+
+/* the chat and the orchestrator in the org chart */
+.org-op .org-name { color: var(--meter-electric-hi, #9ad1ff); }
+
+.org-auto { display: flex; align-items: center; margin-bottom: 10px; }
+.org-auto .backend-secondary { padding: 6px 12px; }
+
+/* the model search box looks the same wherever it sits (org chart, brain steps) */
+.ts input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  background: var(--meter-tile, #1d2024);
+  border: 1px solid var(--meter-border, #2b2e33);
+  border-radius: 6px;
+  color: var(--meter-fg, #e6e6e6);
+  font: inherit;
+}
+.ts input::placeholder { color: var(--meter-sub, #8b8d91); }
+.ts input:hover:not(:disabled) { border-color: var(--meter-electric, #4fa3ff); }
+.ts input:focus-visible { outline: 2px solid var(--meter-electric-hi, #9ad1ff); outline-offset: 2px; }
+.ts input:disabled { opacity: 0.55; cursor: not-allowed; }
+.brain-icon { color: var(--meter-fg, #e6e6e6); font: inherit; line-height: 1; }
+.brain-icon:hover:not(:disabled) { border-color: var(--meter-electric, #4fa3ff); }
+.brain-icon:focus-visible { outline: 2px solid var(--meter-electric-hi, #9ad1ff); outline-offset: 2px; }
+.ts .ts-button { width: 100%; box-sizing: border-box; }
+
+/* the model box carries the same indicator as the dropdowns; it also opens the list */
+.ts input { padding-right: 28px; }
+.ts-chevron { position: absolute; right: 1px; top: 1px; bottom: 1px; width: 28px; display: flex; align-items: center; justify-content: center; padding: 0; background: transparent; border: 0; border-radius: 0 5px 5px 0; color: var(--meter-sub, #8b8d91); cursor: pointer; }
+.ts-chevron:hover { color: var(--meter-fg, #e6e6e6); }
+
+/* full tool access, under a service row */
+.full-access { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin: 4px 0 2px; padding: 8px 10px; background: var(--meter-tip-bg, #0f1113); border-left: 3px solid var(--meter-warn, #f0b429); border-radius: 4px; font-size: 12px; color: var(--meter-sub, #8b8d91); }
+.full-access .switch { margin-right: 0; margin-top: 2px; }
+.switch.is-on.is-warn { background: var(--meter-warn, #f0b429); border-color: var(--meter-warn, #f0b429); }

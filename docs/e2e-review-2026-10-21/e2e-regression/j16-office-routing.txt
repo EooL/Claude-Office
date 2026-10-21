@@ -1,0 +1,22 @@
+=== J16 OFFICE PATH ROUTING (DEFAULT OFFICE ONLY) ===
+Target: http://127.0.0.1:4988
+Date: 2026-10-21T13:44:12.455Z
+
+GET /: status=200, length=548
+GET /o/default/: status=200, length=548
+GET /o/default: status=301, length=159
+[PASS] /o/default/ serves same app HTML as /
+[PASS] /o/default/chat matches legacy /chat: status 200 vs 200, same payload: true
+[PASS] /o/default/agents matches legacy /agents: status 200 vs 200, same payload: true
+[PASS] /o/default/sessions matches legacy /sessions: status 200 vs 200, same payload: true
+[PASS] /o/default/settings matches legacy /settings: status 200 vs 200, same payload: true
+[PASS] /o/default/ws with token -> trusted: true, uiToken: true
+[PASS] /o/default/ws without token -> trusted: false, uiToken withheld: true
+[PASS] /o/off_abc123/chat -> Status 404, body={"error":"Unknown office"} (expected 404 {"error":"Unknown office"})
+[PASS] /o/..%2f/chat -> Status 404, body={"error":"Unknown office"} (expected 404 {"error":"Unknown office"})
+[PASS] /o/OFF_ABC123/chat -> Status 404, body={"error":"Unknown office"} (expected 404 {"error":"Unknown office"})
+[PASS] /o/default%2f..%2fchat -> Status 404, body={"error":"Unknown office"} (expected 404 {"error":"Unknown office"})
+[PASS] Bad Host on /o/default/chat -> Status 421 (expected 421)
+[PASS] Bad Origin on /o/default/chat -> Status 403 (expected 403)
+
+=== J16 RESULT: ALL CHECKS COMPLETED ===

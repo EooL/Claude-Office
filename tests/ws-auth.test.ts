@@ -363,7 +363,8 @@ describe('the token file: reused when it is safe to trust, replaced otherwise', 
     expect(existsSync(tokenFile)).toBe(false)
     const lines = await started(office)
     expect(readFileSync(tokenFile, 'utf8')).toBe(office.server.AUTH_TOKEN)
-    expect(mode(tokenFile)).toBe(0o600)
+    // Windows stat modes do not represent ACL permissions; retain content assertions.
+    if (process.platform !== 'win32') expect(mode(tokenFile)).toBe(0o600)
     expect(lines.join('\n')).toContain(`Auth token written to: ${tokenFile}`)
   })
 
@@ -379,12 +380,14 @@ describe('the token file: reused when it is safe to trust, replaced otherwise', 
       expect(office.server.AUTH_TOKEN).not.toBe(content)
       await started(office)
       expect(readFileSync(tokenFile, 'utf8')).toBe(office.server.AUTH_TOKEN)
-      expect(mode(tokenFile)).toBe(0o600)
+      // Windows stat modes do not represent ACL permissions; retain content assertions.
+      if (process.platform !== 'win32') expect(mode(tokenFile)).toBe(0o600)
     })
   }
 
   for (const fileMode of [0o640, 0o604, 0o644, 0o660]) {
-    it(`replaces a token file other users could read (mode ${fileMode.toString(8)})`, async () => {
+    // chmod cannot express POSIX group/other access on Windows (production also skips this check).
+    it.skipIf(process.platform === 'win32')(`replaces a token file other users could read (mode ${fileMode.toString(8)})`, async () => {
       const { office, tokenFile } = await load(file => { writeFileSync(file, TOKEN); chmodSync(file, fileMode) })
       expect(office.server.AUTH_TOKEN).not.toBe(TOKEN)
       await started(office)
@@ -394,10 +397,17 @@ describe('the token file: reused when it is safe to trust, replaced otherwise', 
   }
 
   it('replaces a token file owned by someone else (simulated: another uid)', async () => {
-    const realUid = process.getuid!()
-    const getuid = vi.spyOn(process, 'getuid').mockReturnValue(realUid + 4242)
-    const { office, tokenFile } = await load(file => writeFileSync(file, TOKEN, { mode: 0o600 }))
-    getuid.mockRestore()
+    const original = Object.getOwnPropertyDescriptor(process, 'getuid')
+    const realUid = process.getuid?.() ?? 0
+    Object.defineProperty(process, 'getuid', { configurable: true, value: () => realUid + 4242 })
+    let result: Awaited<ReturnType<typeof load>>
+    try {
+      result = await load(file => writeFileSync(file, TOKEN, { mode: 0o600 }))
+    } finally {
+      if (original) Object.defineProperty(process, 'getuid', original)
+      else delete (process as any).getuid
+    }
+    const { office, tokenFile } = result
     expect(office.server.AUTH_TOKEN).not.toBe(TOKEN)
     await started(office)
     expect(readFileSync(tokenFile, 'utf8')).toBe(office.server.AUTH_TOKEN)
@@ -412,11 +422,22 @@ describe('the token file: reused when it is safe to trust, replaced otherwise', 
     expect(statSync(tokenFile).uid).toBe(0)
   })
 
-  it('does not follow a symlink: neither reads the token through it nor writes the new one through it', async () => {
+  it('does not follow a symlink: neither reads the token through it nor writes the new one through it', async (context) => {
     const elsewhere = freshDir()
     const target = join(elsewhere, 'planted')
     try {
-      const { office, tokenFile } = await load(file => { writeFileSync(target, TOKEN, { mode: 0o600 }); symlinkSync(target, file) })
+      // File symlinks need Developer Mode or a privilege on Windows. A directory
+      // junction cannot cover reading a planted token file through a file link.
+      writeFileSync(target, TOKEN, { mode: 0o600 })
+      const link = join(elsewhere, 'probe-link')
+      try { symlinkSync(target, link) } catch (error) {
+        if (process.platform === 'win32' && (error as NodeJS.ErrnoException).code === 'EPERM') {
+          context.skip('Windows account cannot create file symlinks (EPERM)')
+        }
+        throw error
+      }
+      rmSync(link)
+      const { office, tokenFile } = await load(file => symlinkSync(target, file))
       expect(office.server.AUTH_TOKEN).not.toBe(TOKEN)
       await started(office)
       expect(lstatSync(tokenFile).isSymbolicLink()).toBe(false)

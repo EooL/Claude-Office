@@ -495,7 +495,8 @@ describe('the answerPermissions setting and its marker file', () => {
     const marker = join(office.dir, 'answer-permissions')
     expect(office.server.ANSWER_MARKER_FILE).toBe(marker)
     expect(existsSync(marker)).toBe(true)
-    expect(statSync(marker).mode & 0o777).toBe(0o600)
+    // NTFS exposes synthetic mode bits; marker creation/content remain checked above.
+    if (process.platform !== 'win32') expect(statSync(marker).mode & 0o777).toBe(0o600)
     expect((await request(office.server.app).get('/settings')).body).toMatchObject({ answerPermissions: true, logPrompts: 'summary' })
 
     const ui = (token: string, body: unknown) => request(office.server.app).post('/settings').set('Authorization', `Bearer ${token}`).send(body as object)
@@ -506,9 +507,9 @@ describe('the answerPermissions setting and its marker file', () => {
 
     const off = await ui(office.server.UI_TOKEN, { answerPermissions: false })
     expect(off.status).toBe(200)
-    expect(off.body).toEqual({ ok: true, logPrompts: 'summary', answerPermissions: false })
+    expect(off.body).toEqual({ ok: true, logPrompts: 'summary', answerPermissions: false, eventMode: 'real' })
     expect(existsSync(marker)).toBe(false)
-    expect(JSON.parse(readFileSync(join(office.dir, 'settings.json'), 'utf8'))).toEqual({ logPrompts: 'summary', answerPermissions: false })
+    expect(JSON.parse(readFileSync(join(office.dir, 'settings.json'), 'utf8'))).toEqual({ logPrompts: 'summary', answerPermissions: false, eventMode: 'real' })
 
     // Off survives a restart: no marker is written at load
     const again = await loadOffice({ dir: office.dir })
@@ -516,7 +517,7 @@ describe('the answerPermissions setting and its marker file', () => {
     expect(existsSync(marker)).toBe(false)
     // The UI token still changes logPrompts too (the page may change both)
     const on = await request(again.server.app).post('/settings').set('Authorization', `Bearer ${again.server.UI_TOKEN}`).send({ answerPermissions: true, logPrompts: 'off' })
-    expect(on.body).toEqual({ ok: true, logPrompts: 'off', answerPermissions: true })
+    expect(on.body).toEqual({ ok: true, logPrompts: 'off', answerPermissions: true, eventMode: 'real' })
     expect(existsSync(marker)).toBe(true)
   })
 

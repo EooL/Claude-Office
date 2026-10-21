@@ -2,12 +2,21 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
 import { loadRuntimeConfig } from './config'
+import { fitScale } from './fit'
 import { captureOfficeToken } from './officeToken'
 
 // The office link carries the token in its fragment (#token=...): keep it and
 // take it out of the address bar before the first render and the WebSocket
 // that presents it (src/officeToken.ts)
 captureOfficeToken()
+
+// The window is a fixed 1056x682 layout: in a smaller browser viewport shrink it
+// to fit (never enlarge) instead of overflowing. --fit feeds .app-wrapper.
+function fit() {
+  document.documentElement.style.setProperty('--fit', String(fitScale(window.innerWidth, window.innerHeight)))
+}
+fit()
+window.addEventListener('resize', fit)
 
 function render() {
   ReactDOM.createRoot(document.getElementById('root')!).render(

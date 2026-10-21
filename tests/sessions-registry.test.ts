@@ -732,13 +732,16 @@ describe('a permission dialog answered or dismissed in the terminal (the registr
 
   it('a leftover file whose pid now belongs to another process is not a session (the reused pid check, in the office)', async () => {
     const ghost = '66666666-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
-    writeFileSync(join(regDir, '1.json'), JSON.stringify(entry({ pid: 1, sessionId: ghost, status: 'waiting', procStart: '99999999' })))
+    // PID 1 need not exist on Windows. Use a known-live PID so the fixture
+    // tests start-time rejection independently of process liveness.
+    const pid = process.pid
+    writeFileSync(join(regDir, `${pid}.json`), JSON.stringify(entry({ pid, sessionId: ghost, status: 'waiting', procStart: '99999999' })))
     office.server.registry.scan()
-    // Where the platform cannot say when pid 1 started, the pid check stands alone
-    const tells = processStart(1) !== null
+    // Where the platform cannot say when the PID started, its liveness stands alone.
+    const tells = processStart(pid) !== null
     expect(office.server.sessions.has(ghost)).toBe(!tells)
     expect((await request(office.server.app).get('/registry')).body.entries.map((e: any) => e.sessionId).includes(ghost)).toBe(!tells)
-    unlinkSync(join(regDir, '1.json'))
+    unlinkSync(join(regDir, `${pid}.json`))
     office.server.registry.scan()
   })
 })

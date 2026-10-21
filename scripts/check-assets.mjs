@@ -39,6 +39,10 @@
  *       it is optional (reported, never fatal). Its `fallback` is a plain
  *       literal and required.
  *
+ *   P5  Service logos: SettingsPanel.tsx shows /logos/{service}.svg for each AI
+ *       service when the file exists in public/logos/ and a coloured initial
+ *       when it does not. The files are optional and nothing is required.
+ *
  * A template literal that builds a /sprites or /rooms path and is not one
  * of KNOWN_DYNAMIC fails the check: model it here before relying on it.
  *
@@ -69,6 +73,7 @@ const KNOWN_DYNAMIC = new Set([
   '*/*-*.png',                          // theme.ts getSpritePath (P1, P2)
   '/sprites/characters/*-*.png',        // PlacementHelper.tsx (P1)
   '/sprites/office/cats/*.png',         // theme.ts getAngelaCat, OFFICE_CATS_PATHS (P3)
+  '/logos/*.svg',                       // SettingsPanel.tsx service logos (P5)
 ])
 
 /** Art the code names but nobody has drawn: the unbuilt rooms in src/rooms.ts. */

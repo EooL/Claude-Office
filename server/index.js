@@ -20,22 +20,40 @@
 import express from 'express'
 import { createServer } from 'http'
 import { WebSocketServer, WebSocket } from 'ws'
-import { readFileSync, existsSync, writeFileSync, mkdirSync, realpathSync, chmodSync, unlinkSync, openSync, fstatSync, closeSync, constants as fsConstants } from 'fs'
+import { readFileSync, existsSync, writeFileSync, mkdirSync, realpathSync, chmodSync, unlinkSync } from 'fs'
 import { homedir } from 'os'
 import { join, basename } from 'path'
-import { randomBytes, timingSafeEqual, createHmac } from 'crypto'
 import { execFile } from 'child_process'
 import { fileURLToPath } from 'url'
 import { dirname } from 'path'
-import { addMessage, getMessages, markSeen, addReaction, markInboxRead } from './chat-db.js'
-import db from './chat-db.js'
+import './chat-db.js'
 import { mountStatus } from './status.js'
 import { mountRegistry } from './sessions.js'
 import { mountTasks } from './tasks.js'
 import { mountPermissions, sanitiseSuggestions, redactPermission } from './permissions.js'
 import { mountHealth, readVersion } from './health.js'
+import { mountBackends } from './backends.js'
+import { mountBrains, refreshCatalogueSoon, startCatalogueRefresh } from './brainRoutes.js'
+import { mountArtifacts } from './artifacts.js'
+import { mountChatActions } from './chat-actions.mjs'
 import { readPort, readUiPort, readHost, loadOfficeConfig, bossFromConfig } from './config.js'
 import { agentTranscriptPath, readTranscript, isTranscriptPath, clampLine } from './transcript.js'
+import { defaultOfficeContext } from './office-context.mjs'
+import { officeHome } from './paths.mjs'
+import { adapterNames, services } from './adapters.mjs'
+import { enrichProfile } from './agent-enrich.mjs'
+import { agentCard, checkAccess, claudeAgentFile, defaultProfile, listProfiles, loadProfile, parseProfile, ProfileError, resetProfile, saveProfile, serializeProfile, summarizeAccess, validateProfile } from './agent-profiles.mjs'
+import { loadMasterPrompt, validateMasterPrompt, saveMasterPrompt, resetMasterPrompt } from './master-prompt.mjs'
+import { defaultOffice } from './default-office.mjs'
+import { currentOffice, officeTimeout, runInOffice, scopedObject, scopedState } from './office-scope.mjs'
+import { validateOfficePath, resolveOffice, legacyOffice, unknownOffice, upgradeOffice } from './office-routing.mjs'
+
+const db = scopedObject(() => currentOffice().chat.db, defaultOffice.chat.db)
+const addMessage = (...args) => currentOffice().chat.addMessage(...args)
+const getMessages = (...args) => currentOffice().chat.getMessages(...args)
+const markSeen = (...args) => currentOffice().chat.markSeen(...args)
+const addReaction = (...args) => currentOffice().chat.addReaction(...args)
+const markInboxRead = (...args) => currentOffice().chat.markInboxRead(...args)
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -108,46 +126,18 @@ const UI_DEV_PORT = readUiPort()
 // rotate-token` deletes the file, and the next start writes a new one.
 // ---------------------------------------------------------------------------
 
-const RUNTIME_DIR = process.env.AGENT_OFFICE_HOME || join(homedir(), '.agent-office')
+const RUNTIME_DIR = officeHome(process.env.OFFICE_ID ?? 'default')
 try { mkdirSync(RUNTIME_DIR, { recursive: true, mode: 0o700 }) } catch {}
 // mkdirSync's mode is ignored when the dir already exists, so a dir the
 // installer or an older build left group/world-readable keeps those bits.
 // Tighten it to 0700 unconditionally (the prompts in chat.db and the A2A
 // inbox under here must not be readable by other local users).
 try { chmodSync(RUNTIME_DIR, 0o700) } catch {}
-const TOKEN_FILE = join(RUNTIME_DIR, 'auth-token')
-
-// What the server writes: 32 random bytes as 64 lowercase hex digits
-const TOKEN_PATTERN = /^[0-9a-f]{64}$/
-
-/**
- * The token a previous start left in `file`, if it is still safe to keep
- * using: a regular file (a symlink is not followed), owned by this user,
- * with no group or other permission bits, holding a well-formed token.
- * Anything else — missing, malformed, readable by others, someone else's —
- * is null, and the server mints a new token instead. The file is opened
- * once and checked through that descriptor, so it cannot be swapped between
- * the check and the read. Windows has no uid or mode bits to check.
- */
-function readTokenFile(file = TOKEN_FILE) {
-  let fd
-  try {
-    fd = openSync(file, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0))
-    const st = fstatSync(fd)
-    if (!st.isFile()) return null
-    if (typeof process.getuid === 'function' && st.uid !== process.getuid()) return null
-    if (process.platform !== 'win32' && (st.mode & 0o077) !== 0) return null
-    const token = readFileSync(fd, 'utf8').trim()
-    return TOKEN_PATTERN.test(token) ? token : null
-  } catch {
-    return null
-  } finally {
-    if (fd !== undefined) try { closeSync(fd) } catch {}
-  }
-}
-
-const REUSED_TOKEN = readTokenFile()
-const AUTH_TOKEN = REUSED_TOKEN ?? randomBytes(32).toString('hex')
+// The default office's secrets (server/office-auth.mjs). Every office owns its own; the checks below ask the
+// office in scope, so a second office never answers to this one's token.
+const TOKEN_FILE = defaultOffice.auth.tokenFile
+const REUSED_TOKEN = defaultOffice.auth.reusedToken
+const AUTH_TOKEN = defaultOffice.auth.token
 
 /**
  * Write a file only this user can read. The mode applies when the file is
@@ -174,39 +164,14 @@ function repairPrivateModes() {
   }
 }
 
-/**
- * Put AUTH_TOKEN in the token file (after listen). A reused token is already
- * there. A new one replaces whatever the file was — unlinked first and then
- * created exclusively, so a symlink or a file owned by someone else is
- * replaced rather than written through.
- */
+/** Put the default office's token in its file (after listen); see writeTokenFile in office-auth.mjs. */
 function writeTokenFile() {
-  if (readTokenFile() === AUTH_TOKEN) return
-  try {
-    try { unlinkSync(TOKEN_FILE) } catch (err) { if (err.code !== 'ENOENT') throw err }
-    writeFileSync(TOKEN_FILE, AUTH_TOKEN, { mode: 0o600, flag: 'wx' })
-    try { chmodSync(TOKEN_FILE, 0o600) } catch {}
-  } catch (err) {
-    console.warn('[auth] Could not write token file:', err.message)
-  }
+  defaultOffice.auth.writeTokenFile()
 }
 
-/**
- * The server's answer to an opener's /health challenge: HMAC-SHA256 of the
- * token over 'office-health:' + challenge. Only a holder of the token can
- * make it, so an opener knows it is about to hand the token to this office
- * and not to a process that took the port while the office was down.
- */
-function officeProof(token, challenge) {
-  return createHmac('sha256', token).update(`office-health:${challenge}`).digest('hex')
-}
-
-/** Constant-time comparison of a supplied token with ours. */
+/** Constant-time comparison of a supplied token with the token of the office in scope. */
 function tokenMatches(supplied) {
-  if (typeof supplied !== 'string' || supplied.length === 0) return false
-  const a = Buffer.from(supplied, 'utf8')
-  const b = Buffer.from(AUTH_TOKEN, 'utf8')
-  return a.length === b.length && timingSafeEqual(a, b)
+  return currentOffice().auth.tokenMatches(supplied)
 }
 
 function bearerToken(req) {
@@ -237,32 +202,9 @@ function bearerToken(req) {
 // within SIGNATURE_WINDOW_MS. Both checks are constant-time.
 // ---------------------------------------------------------------------------
 
-/** ±1 minute: wide enough for clock skew, narrow enough that a leaked signature expires fast. */
-const SIGNATURE_WINDOW_MS = 60_000
-
-/** HMAC-SHA256(token, canonical request) as the hook computes it. The key is the token string's bytes. */
-function requestSignature(method, path, timestamp, rawBody) {
-  const h = createHmac('sha256', AUTH_TOKEN)
-  h.update(`${method}\n${path}\n${timestamp}\n`)
-  h.update(rawBody && rawBody.length ? rawBody : Buffer.alloc(0))
-  return h.digest()
-}
-
-/**
- * True when the request carries a signature this server's token would
- * produce over the raw body, for a timestamp within the window. `req.rawBody`
- * is captured by express.json's verify hook (the exact bytes the hook signed);
- * it is empty for the hook's GET long-poll, which signs an empty body.
- */
+/** True when the request carries the signature the office in scope's token would produce (see office-auth.mjs). */
 function signatureValid(req) {
-  const ts = req.headers['x-office-timestamp']
-  const sig = req.headers['x-office-signature']
-  if (typeof ts !== 'string' || typeof sig !== 'string' || !/^[0-9a-f]+$/.test(sig)) return false
-  const tnum = Number(ts)
-  if (!Number.isFinite(tnum) || Math.abs(Date.now() - tnum) > SIGNATURE_WINDOW_MS) return false
-  const given = Buffer.from(sig, 'hex')
-  const expected = requestSignature(req.method, req.originalUrl, ts, req.rawBody)
-  return given.length === expected.length && timingSafeEqual(given, expected)
+  return currentOffice().auth.signatureValid(req)
 }
 
 /** A caller proved it holds the token: a valid bearer token, or a valid request signature. */
@@ -362,13 +304,10 @@ function isAllowedHost(hostHeader) {
 // nothing and the terminal dialog is in charge.
 // ---------------------------------------------------------------------------
 
-const UI_TOKEN = randomBytes(24).toString('hex')
+const UI_TOKEN = defaultOffice.auth.uiToken
 
 function uiTokenMatches(supplied) {
-  if (typeof supplied !== 'string' || supplied.length === 0) return false
-  const a = Buffer.from(supplied, 'utf8')
-  const b = Buffer.from(UI_TOKEN, 'utf8')
-  return a.length === b.length && timingSafeEqual(a, b)
+  return currentOffice().auth.uiTokenMatches(supplied)
 }
 
 /** Express middleware: the office page (UI token from the snapshot) or a token holder. */
@@ -420,7 +359,7 @@ function discoverMcpServers() {
   const candidates = [
     join(homedir(), '.claude', 'settings.json'),
     join(homedir(), '.claude.json'),
-    join(process.cwd(), '.claude.json'),
+    join(defaultOfficeContext.cwd, '.claude.json'),
   ]
 
   for (const filePath of candidates) {
@@ -445,7 +384,8 @@ function discoverMcpServers() {
 // ---------------------------------------------------------------------------
 
 /** @type {Map<string, object>} agentId -> agent object */
-const activeAgents = new Map()
+const state = scopedObject(() => currentOffice().state, defaultOffice.state)
+const activeAgents = scopedState('activeAgents')
 
 /**
  * Claude Code subagent id (the `agent_id` in hook payloads) -> office agent id.
@@ -453,7 +393,7 @@ const activeAgents = new Map()
  * agent only know the subagent id, so this is how they find their agent.
  * @type {Map<string, string>}
  */
-const subagentAliases = new Map()
+const subagentAliases = scopedState('subagentAliases')
 
 /**
  * SubagentStart events that arrived before the agent_spawned they belong to.
@@ -463,7 +403,7 @@ const subagentAliases = new Map()
  * both say which), or dropped after PENDING_START_MS.
  * @type {Map<string, {agentType: string, parentId?: string, sessionId?: string, at: number}>}
  */
-const pendingStarts = new Map()
+const pendingStarts = scopedState('pendingStarts')
 const PENDING_START_MS = 15_000
 
 // How long after its spawn an agent can still be bound by guess (see
@@ -503,7 +443,7 @@ const ACTIVITY_TEXT_MAX = 160
 const MAIN_ID_PREFIX = 'main-'
 
 /** @type {Map<string, {history: object[], toolCounts: Record<string, number>}>} office id or main-<sessionId> -> activity */
-const activity = new Map()
+const activity = scopedState('activity')
 
 /** The office id of a session's own Claude (what the frontend's mainId() gives it). */
 function mainActivityId(sessionId) {
@@ -576,7 +516,7 @@ function toolFromStatus(status) {
 // ---------------------------------------------------------------------------
 
 /** @type {Map<string, object>} sessionId -> session record */
-const sessions = new Map()
+const sessions = scopedState('sessions')
 
 // Claude Code's config dir (CLAUDE_CONFIG_DIR moves it) holds the registry;
 // tests point AGENT_OFFICE_REGISTRY_DIR at a temp dir
@@ -587,7 +527,7 @@ const REGISTRY_DIR = process.env.AGENT_OFFICE_REGISTRY_DIR || join(CLAUDE_DIR, '
 const TASKS_DIR = process.env.AGENT_OFFICE_TASKS_DIR || join(CLAUDE_DIR, 'tasks')
 
 /** @type {Map<string, ReturnType<typeof setTimeout>>} sessionId -> timer that forgets an ended session */
-const sessionTimers = new Map()
+const sessionTimers = scopedState('sessionTimers')
 
 // An ended session stays listed (state 'ended') this long so UIs can show it leaving
 const SESSION_FORGET_MS = 60_000
@@ -654,9 +594,9 @@ const NEEDS_YOU_TIMEOUT_MS = 10 * 60_000
 const TASK_IN_FLIGHT = /^(running|pending)$/i
 
 /** @type {Map<string, {wait: object, agentId?: string, timer: ReturnType<typeof setTimeout>}>} sessionId -> needs-you waiting out the debounce */
-const pendingNeedsYou = new Map()
+const pendingNeedsYou = scopedState('pendingNeedsYou')
 /** @type {Map<string, ReturnType<typeof setTimeout>>} sessionId -> timer that lowers a hand nobody answered */
-const needsYouTimers = new Map()
+const needsYouTimers = scopedState('needsYouTimers')
 /**
  * A wait (parked, or main.needsYou) -> the call behind it: { agentId?, callKey?,
  * before? } — the raw subagent id that asked, the hook's callKey, and the main
@@ -665,7 +605,7 @@ const needsYouTimers = new Map()
  * name alone, as before.
  * @type {WeakMap<object, {agentId?: string, callKey?: string, before?: string}>}
  */
-const waitCalls = new WeakMap()
+const waitCalls = scopedState('waitCalls')
 
 const callOf = wait => (wait && waitCalls.get(wait)) || {}
 
@@ -752,7 +692,7 @@ function mainEvent(session, reason, now = Date.now()) {
 function armNeedsYouTimeout(session, delayMs = NEEDS_YOU_TIMEOUT_MS) {
   clearNeedsYouTimer(session.id)
   const since = session.main.needsYou?.since
-  const timer = setTimeout(() => {
+  const timer = officeTimeout(() => {
     needsYouTimers.delete(session.id)
     const current = sessions.get(session.id)
     if (!current || current.main?.state !== 'needs-you' || current.main.needsYou?.since !== since) return
@@ -1046,7 +986,7 @@ function endSession(session, reason, now = Date.now()) {
   }
   saveAgents()
   clearSessionTimer(session.id)
-  const timer = setTimeout(() => forgetSession(session.id), SESSION_FORGET_MS)
+  const timer = officeTimeout(() => forgetSession(session.id), SESSION_FORGET_MS)
   timer.unref?.()
   sessionTimers.set(session.id, timer)
   console.log(`[session] ended (${reason}): ${session.project ?? session.id} (${session.id})`)
@@ -1329,7 +1269,7 @@ function clampCount(val, max = Number.MAX_SAFE_INTEGER) {
 const SETTINGS_FILE = join(RUNTIME_DIR, 'settings.json')
 const ANSWER_MARKER_FILE = join(RUNTIME_DIR, 'answer-permissions')
 const LOG_PROMPTS_LEVELS = new Map([['off', 0], ['summary', 200], ['full', MAX_TEXT_LEN]])
-const settings = { logPrompts: 'summary', answerPermissions: true }
+const settings = scopedState('settings')
 
 function loadSettings() {
   if (!existsSync(SETTINGS_FILE)) return
@@ -1338,6 +1278,7 @@ function loadSettings() {
     if (saved && typeof saved === 'object') {
       if (LOG_PROMPTS_LEVELS.has(saved.logPrompts)) settings.logPrompts = saved.logPrompts
       if (typeof saved.answerPermissions === 'boolean') settings.answerPermissions = saved.answerPermissions
+      if (['real', 'emulated'].includes(saved.eventMode)) settings.eventMode = saved.eventMode
     }
   } catch (err) {
     console.warn('[settings] Could not read settings:', err.message)
@@ -1464,10 +1405,9 @@ const SIGNAL_RING_SIZE = 100
 const SNAPSHOT_SIGNALS = 20
 
 /** @type {object[]} the last SIGNAL_RING_SIZE signals, oldest first */
-const signalRing = []
+const signalRing = scopedState('signalRing')
 /** @type {Map<string, object[]>} sessionId -> that session's last SIGNAL_RING_SIZE signals */
-const sessionSignals = new Map()
-let signalSeq = 0
+const sessionSignals = scopedState('sessionSignals')
 
 /** A tracker's signal list, checked and clamped: unknown kinds and non-objects are dropped. */
 function sanitiseSignals(list) {
@@ -1529,7 +1469,7 @@ function relaySignals(body, signals) {
       ...(agentId ? { agentId } : {}),
       ...(agentName ? { agentName } : {}),
       at,
-      seq: ++signalSeq,
+      seq: ++state.signalSeq,
     }
     pushRing(signalRing, record)
     if (body.sessionId) {
@@ -1564,7 +1504,9 @@ function validateEvent(body) {
 // Express + HTTP server
 // ---------------------------------------------------------------------------
 
-const app = express()
+const rootApp = express()
+const app = express.Router()
+app.locals = rootApp.locals
 
 // JSON bodies: 10 KiB is plenty for a chat line or a tool event, but a
 // session_prompt / session_turn_end carries up to MAX_TEXT_LEN characters of
@@ -1581,17 +1523,23 @@ const eventJsonBody = express.json({ limit: EVENT_JSON_LIMIT, verify: captureRaw
 // Host-header guard: the first thing every request passes, before the body
 // parsers and CORS. A non-loopback (or missing) Host is a DNS-rebinding page
 // or a cross-host request and is refused outright.
-app.use((req, res, next) => {
+rootApp.use((req, res, next) => {
   if (!isAllowedHost(req.headers.host)) {
     return res.status(421).json({ error: 'Forbidden host' })
   }
   next()
 })
 
-app.use((req, res, next) => (req.path === '/event' ? eventJsonBody : jsonBody)(req, res, next))
+rootApp.use((req, res, next) => {
+  // New prefixed requests resolve after the unchanged Origin guard, before
+  // parsing a body. Legacy requests retain their original parser order.
+  if (req.path === '/o' || req.path.startsWith('/o/')) return next()
+  // a profile file may be up to 20 KB (JSON-escaped, more)
+  return (req.path === '/event' || req.path.startsWith('/profiles') ? eventJsonBody : jsonBody)(req, res, next)
+})
 
 // CORS for local dev — only allow known localhost origins
-app.use((req, res, next) => {
+rootApp.use((req, res, next) => {
   const origin = req.headers.origin
   if (origin && !isAllowedOrigin(origin)) {
     return res.status(403).json({ error: 'Forbidden origin' })
@@ -1599,7 +1547,7 @@ app.use((req, res, next) => {
   if (origin) {
     res.setHeader('Access-Control-Allow-Origin', origin)
   }
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
   next()
 })
@@ -1608,7 +1556,7 @@ app.options('*', (_req, res) => res.sendStatus(204))
 
 // Payroll / electricity / memory: POST /status + GET /status (server/status.js),
 // fed by the Claude Code status line and keyed by the same session ids as `sessions`
-const status = mountStatus(app, { requireToken, broadcast, staleMs: STALE_AGENT_MS, sessions })
+const status = runInOffice(defaultOffice, () => mountStatus(app, { requireToken, broadcast, staleMs: STALE_AGENT_MS, sessions }))
 
 /**
  * A permission was answered from the office: the session's hand comes down
@@ -1643,7 +1591,7 @@ const permissions = mountPermissions(app, {
   // The hook trusts a decision only when the office proves it holds the token:
   // HMAC(token, nonce + permissionId + decision) over the nonce the hook made.
   // A squatter has never seen the token, so it cannot forge this.
-  proof: (nonce, id, decision) => createHmac('sha256', AUTH_TOKEN).update(`${nonce}${id}${decision}`).digest('hex'),
+  proof: (nonce, id, decision) => currentOffice().auth.proof(nonce, id, decision),
 })
 
 /**
@@ -1660,7 +1608,7 @@ function releasePermissions(sessionId, reason, filter) {
 // POST /event stamps it, the WS snapshot carries it, the status strip and `npm run doctor` read it.
 // `sessions` counts every active session, registry-only ones included: "2 sessions, 0 hooks seen"
 // is exactly the picture the doctor needs when the hooks are not installed.
-const health = mountHealth(app, { broadcast, uiAvailable: UI_AVAILABLE, prove: challenge => officeProof(AUTH_TOKEN, challenge), counts: () => ({ agents: activeAgents.size, clients: wss?.clients.size ?? 0, sessions: Array.from(sessions.values()).filter(s => s.state === 'active').length }) })
+const health = mountHealth(app, { broadcast, uiAvailable: UI_AVAILABLE, prove: challenge => currentOffice().auth.officeProof(challenge), counts: () => ({ agents: activeAgents.size, clients: wss?.clients.size ?? 0, sessions: Array.from(sessions.values()).filter(s => s.state === 'active').length }) })
 
 // The registry roster (server/sessions.js): Claude Code's own session registry
 // adds the sessions nothing has hooks for, and ends them when their process
@@ -1715,6 +1663,26 @@ const tasks = mountTasks(app, {
  * Open, like GET /health: nothing here that http://127.0.0.1:<port>/ does
  * not already show.
  */
+mountBackends(app, { requireUi, onServicesChanged: () => refreshCatalogueSoon() })
+mountBrains(app, { requireUi })
+mountArtifacts(app, { requireUi, getMessage: id => db.prepare('SELECT text, msg_type FROM messages WHERE id = ?').get(id) })
+mountChatActions(app, {
+  db, requireUi,
+  readState: () => { try { return JSON.parse(readFileSync(join(RUNTIME_DIR, 'delegation.json'), 'utf8')) } catch { return {} } },
+  paused: () => { try { return JSON.parse(readFileSync(join(RUNTIME_DIR, 'chat-poll-state'), 'utf8')).paused === true } catch { return false } },
+  enqueue: (text, msgType) => {
+    const row = addMessage({ sender: 'Boss', role: msgType === 'goal' ? 'boss' : 'default', text, msgType })
+    broadcast({ type: 'chat_message', ...row })
+    return row
+  },
+  // a decision on a proposed step (approved or declined) stays in the chat history as a line of its own
+  log: text => {
+    // a system line: the page ignores the server's echo of a Boss row (it posts those itself), so it would not show
+    const row = addMessage({ sender: 'system', text, isSystem: true, msgType: 'decision' })
+    broadcast({ type: 'chat_message', ...row, isSystem: true })
+  },
+})
+
 app.get('/config', (_req, res) => {
   const { config, file } = loadOfficeConfig(CONFIG_DIR)
   const address = httpServer.address()
@@ -1735,6 +1703,101 @@ app.get('/roster', (_req, res) => {
     mcpServers,
     activeAgents: liveAgents(),
   })
+})
+
+// Project rules remain fail-closed for non-default offices, like the profile routes below.
+app.get('/master-prompt', (_req, res) => res.json(loadMasterPrompt({ home: currentOffice().context.home })))
+app.post('/master-prompt/validate', (req, res) => res.json(validateMasterPrompt(req.body?.text)))
+app.put('/master-prompt', requireUi, (req, res) => {
+  const { text, status } = req.body ?? {}
+  const result = validateMasterPrompt(text)
+  if (!result.ok) return res.status(typeof text === 'string' && Buffer.byteLength(text, 'utf8') > 8 * 1024 ? 413 : 400).json(result)
+  try { res.json(saveMasterPrompt(text, { home: currentOffice().context.home, status })) }
+  catch (error) {
+    if (!error.errors) throw error
+    res.status(400).json({ ok: false, errors: error.errors, warnings: result.warnings })
+  }
+})
+app.delete('/master-prompt', requireUi, (_req, res) => res.json(resetMasterPrompt({ home: currentOffice().context.home })))
+
+// Job descriptions of the office agents (server/agent-profiles.mjs). Overrides live in the home of the office in scope.
+const profileHome = () => currentOffice().context.home
+const profileView = (loaded) => ({
+  role: loaded.role, text: serializeProfile(loaded.profile), defaultText: serializeProfile(defaultProfile(loaded.role)),
+  frontmatter: loaded.profile.frontmatter, source: loaded.source, hash: loaded.hash, warnings: loaded.warnings,
+  accessChecks: Object.fromEntries(adapterNames.map(s => [s, checkAccess(loaded.profile, s)])),
+  accessSummary: summarizeAccess(loaded.profile, services().filter(s => s.enabled)),
+})
+/** Runs fn(loaded) for the role in the URL; a ProfileError becomes 404 (unknown role), 409 (locked) or 400. */
+const withProfile = (fn, { write = false } = {}) => (req, res) => {
+  try {
+    const loaded = loadProfile(req.params.role, { home: profileHome() })
+    return fn(loaded, req, res)
+  } catch (e) {
+    if (!(e instanceof ProfileError)) throw e
+    const errors = e.errors
+    if (errors.some(x => x.field === 'role')) return res.status(404).json({ error: 'Unknown role' })
+    if (write && errors.some(x => x.field === 'office.locked')) return res.status(409).json({ error: e.message, errors })
+    return res.status(400).json({ error: e.message, errors })
+  }
+}
+const saveFromBody = (status) => withProfile((loaded, req, res) => {
+  const text = typeof req.body?.text === 'string' ? req.body.text : (status ? serializeProfile(loaded.profile) : undefined)
+  if (text === undefined) return res.status(400).json({ error: 'text is required' })
+  const wanted = status ?? req.body?.status
+  if (wanted !== undefined && !['draft', 'approved', 'default'].includes(wanted)) return res.status(400).json({ error: 'status must be draft, approved or default' })
+  res.json(profileView(saveProfile(loaded.role, text, { home: profileHome(), status: wanted })))
+}, { write: true })
+
+app.get('/profiles', (_req, res) => {
+  res.json(listProfiles({ home: profileHome() }).map(({ role, profile: { frontmatter: f }, source, hash, warnings }) => ({
+    role, displayName: f.office.displayName, status: f.office.status, source, hash, warnings,
+    reportsTo: f.office.reportsTo, tier: f.model, effort: f.effort, access: f.office.access,
+  })))
+})
+app.get('/profiles/:role', withProfile((loaded, _req, res) => res.json(profileView(loaded))))
+app.get('/profiles/:role/card', withProfile((loaded, _req, res) => res.json(agentCard(loaded.profile, { url: A2A_URL }))))
+app.get('/profiles/:role/claude', withProfile((loaded, _req, res) => {
+  res.type('text/markdown').set('Content-Disposition', `attachment; filename="${loaded.role}.md"`).send(claudeAgentFile(loaded.profile))
+}))
+app.post('/profiles/:role/validate', withProfile((loaded, req, res) => {
+  try {
+    const parsed = parseProfile(String(req.body?.text ?? ''))
+    res.json(validateProfile(parsed, { role: loaded.role }))
+  } catch (e) {
+    if (!(e instanceof ProfileError)) throw e
+    res.json({ ok: false, errors: e.errors })
+  }
+}))
+app.put('/profiles/:role', requireUi, saveFromBody())
+app.post('/profiles/:role/approve', requireUi, saveFromBody('approved'))
+app.delete('/profiles/:role', requireUi, withProfile((loaded, _req, res) => {
+  resetProfile(loaded.role, { home: profileHome() })
+  res.json(profileView(loadProfile(loaded.role, { home: profileHome() })))
+}))
+// Option C of docs/agent-job-description-options.md: a model rewrites the prose sections of the job description. By
+// default nothing is written: the page shows the returned text as an unsaved draft for the owner to review and save.
+// { save: true } stores it as a draft, { force: true } also replaces an approved profile. It is a chat call (two at most,
+// with the retry) on the owner's AI subscription, so one at a time per role.
+app.post('/profiles/:role/enrich', requireUi, async (req, res) => {
+  const office = currentOffice()
+  let loaded
+  try { loaded = loadProfile(req.params.role, { home: profileHome() }) } catch (e) {
+    if (!(e instanceof ProfileError)) throw e
+    return res.status(e.errors.some(x => x.field === 'role') ? 404 : 400).json({ error: e.errors.some(x => x.field === 'role') ? 'Unknown role' : e.message, errors: e.errors })
+  }
+  const running = (office.enriching ??= new Set())
+  if (running.has(loaded.role)) return res.status(409).json({ error: `An enrichment of ${loaded.role} is already running` })
+  running.add(loaded.role)
+  try {
+    const out = await enrichProfile(loaded.role, { home: profileHome(), cwd: office.context.cwd, dryRun: req.body?.save !== true, force: req.body?.force === true })
+    res.json(out)
+  } catch (e) {
+    if (!(e instanceof ProfileError)) { console.error('[profiles] enrich failed:', e); return res.status(500).json({ error: 'Internal error' }) }
+    const field = e.errors[0]?.field
+    const status = ['office.locked', 'office.status'].includes(field) ? 409 : field === 'model' ? 502 : field === 'answer' ? 422 : 400
+    res.status(status).json({ error: e.message, errors: e.errors })
+  } finally { running.delete(loaded.role) }
 })
 
 /**
@@ -1979,6 +2042,21 @@ app.post('/chat', (req, res) => {
   if (typeof text === 'string' && text.startsWith('/')) {
     const parts = text.split(' ')
     const cmd = parts[0]
+    // /goal sends an agent to work on the files: the page (UI token) or a token holder may say it.
+    // It is stored as a boss row of type 'goal', which is what the delegation flow trusts.
+    if (cmd === '/goal') {
+      const supplied = bearerToken(req)
+      if (!uiTokenMatches(supplied) && !tokenMatches(supplied)) {
+        const sysMsg = addMessage({ sender: 'system', text: '🔒 /goal needs the office page opened with its link (npm run open)', isSystem: true })
+        broadcast({ type: 'chat_message', ...sysMsg, isSystem: true })
+        console.warn(`[chat] Refused /goal from ${clampString(sender)}: no token`)
+        return unauthorized(res, { error: '/goal needs the office token' })
+      }
+      const row = addMessage({ sender: clampString(sender), role: 'boss', text: clampString(text, 2000), msgType: 'goal' })
+      broadcast({ type: 'chat_message', ...row })
+      console.log(`[chat] ${row.sender}: ${row.text}`)
+      return res.json({ ok: true })
+    }
     if (PRIVILEGED_COMMANDS.has(cmd) && !tokenMatches(bearerToken(req))) {
       // Tell the person in the chat panel why nothing happened (the UI ignores
       // the HTTP status), and the caller through the status
@@ -2025,14 +2103,12 @@ app.post('/chat', (req, res) => {
 // Toggle via POST /chat/video-mode  { enabled: true/false }  (needs the token:
 // it hides messages from every polling session)
 // ---------------------------------------------------------------------------
-let videoPaused = false
-let videoPausedSince = 0
 
 app.post('/chat/video-mode', requireToken, (req, res) => {
-  videoPaused = !!req.body?.enabled
-  videoPausedSince = videoPaused ? Date.now() : 0
-  console.log(`[video-mode] chat polling ${videoPaused ? 'PAUSED' : 'RESUMED'}`)
-  res.json({ ok: true, videoPaused })
+  state.videoPaused = !!req.body?.enabled
+  state.videoPausedSince = state.videoPaused ? Date.now() : 0
+  console.log(`[video-mode] chat polling ${state.videoPaused ? 'PAUSED' : 'RESUMED'}`)
+  res.json({ ok: true, videoPaused: state.videoPaused })
 })
 
 /**
@@ -2048,9 +2124,9 @@ app.get('/chat', (req, res) => {
   // The Boss / Claude transcript rows only for a caller with the office token
   // (the chat watcher and any other local process never see them)
   let messages = getMessages({ since, limit: 50, recipient, transcript: tokenMatches(bearerToken(req)) })
-  if (videoPaused && videoPausedSince) {
+  if (state.videoPaused && state.videoPausedSince) {
     // Hide any messages created after video mode was enabled (scripted messages)
-    messages = messages.filter(m => m.timestamp < videoPausedSince)
+    messages = messages.filter(m => m.timestamp < state.videoPausedSince)
   }
   res.json({ messages })
 })
@@ -2066,7 +2142,7 @@ const A2A_TYPES = new Set(['message', 'question', 'review_request', 'task_handof
 const A2A_PAIR_LIMIT = Number(process.env.AGENT_OFFICE_A2A_LIMIT) || 10
 const A2A_WINDOW_MS = 60_000
 /** @type {Map<string, number[]>} "a|b" (sorted, lowercase) -> send timestamps */
-const a2aPairLog = new Map()
+const a2aPairLog = scopedState('a2aPairLog')
 
 function a2aBudgetLeft(a, b) {
   const key = [a.toLowerCase(), b.toLowerCase()].sort().join('|')
@@ -2105,6 +2181,7 @@ function agentAddresses(agent) {
  * @returns {{ error?: string, status?: number, msg?: object, to?: string|null, recipientAgent?: object|null }}
  */
 function sendAgentMessage({ sender, role, text, recipient, type, replyTo, senderId }) {
+  if (currentOffice() !== defaultOffice) throw new Error('Agent messaging not scoped yet')
   if (!text || typeof text !== 'string') return { error: 'Missing text', status: 400 }
 
   let to = clampString(recipient)?.trim() || null
@@ -2416,7 +2493,8 @@ app.get('/settings', (_req, res) => {
 })
 
 app.post('/settings', requireUi, (req, res) => {
-  const { logPrompts, answerPermissions } = req.body ?? {}
+  const { logPrompts, answerPermissions, eventMode } = req.body ?? {}
+  if (eventMode !== undefined && !['real', 'emulated'].includes(eventMode)) return res.status(400).json({ error: 'eventMode must be real or emulated' })
   if (logPrompts !== undefined) {
     if (typeof logPrompts !== 'string' || !LOG_PROMPTS_LEVELS.has(logPrompts)) {
       return res.status(400).json({ error: `logPrompts must be one of ${Array.from(LOG_PROMPTS_LEVELS.keys()).join(', ')}` })
@@ -2427,6 +2505,7 @@ app.post('/settings', requireUi, (req, res) => {
   }
   if (logPrompts !== undefined) settings.logPrompts = logPrompts
   if (answerPermissions !== undefined) settings.answerPermissions = answerPermissions
+  if (eventMode !== undefined) settings.eventMode = eventMode
   saveSettings()
   syncAnswerMarker()
   console.log(`[settings] logPrompts = ${settings.logPrompts}, answerPermissions = ${settings.answerPermissions}`)
@@ -2670,6 +2749,7 @@ app.post('/chat/cron-state', (req, res) => {
 // ---------------------------------------------------------------------------
 
 function processEvent(body) {
+  if (currentOffice() !== defaultOffice) throw new Error('Events not scoped yet')
   switch (body.type) {
     case 'agent_spawned': {
       const agent = body.agent ?? {}
@@ -2896,7 +2976,7 @@ function processEvent(body) {
         recordActivity(id, { kind: 'completed', text: body.result ?? 'done' }, agent.completedAt)
         saveAgents()
         // Remove after a short grace period so frontends can animate exit
-        setTimeout(() => forgetAgent(id), 10_000)
+        officeTimeout(() => forgetAgent(id), 10_000)
 
         // Proactive message — announce completion in chat
         const resultShort = (body.result ?? 'done').slice(0, 50)
@@ -3160,7 +3240,7 @@ function processEvent(body) {
       // Which call asked (see "Which call a permission wait belongs to")
       if (body.agentId || body.callKey) waitCalls.set(wait, { ...(body.agentId ? { agentId: body.agentId } : {}), ...(body.callKey ? { callKey: body.callKey } : {}) })
       console.log(`[main] ${sessionName(session)}: needs-you requested (${needsYouLabel(wait)})`)
-      const timer = setTimeout(() => applyNeedsYou(session.id), NEEDS_YOU_DEBOUNCE_MS)
+      const timer = officeTimeout(() => applyNeedsYou(session.id), NEEDS_YOU_DEBOUNCE_MS)
       timer.unref?.()
       pendingNeedsYou.set(session.id, { wait, agentId: body.agentId, timer })
       return null
@@ -3310,6 +3390,7 @@ const MCP_STALE_MS = (Number(process.env.AGENT_OFFICE_MCP_STALE_MINUTES) || 5) *
  * parameter so tests can sweep a future.
  */
 function sweepStale(now = Date.now()) {
+  if (currentOffice() !== defaultOffice) throw new Error('Sweep not scoped yet')
   const cutoff = now - STALE_AGENT_MS
   for (const session of Array.from(sessions.values())) {
     // A session with a live registry entry has a running process, however
@@ -3339,7 +3420,7 @@ function sweepStale(now = Date.now()) {
   }
 }
 
-setInterval(() => sweepStale(), 5 * 60_000).unref()
+setInterval(() => runInOffice(defaultOffice, sweepStale), 5 * 60_000).unref()
 
 // ---------------------------------------------------------------------------
 // Static UI — registered after every API route so /health, /chat, ... win
@@ -3380,7 +3461,13 @@ function jsonErrorHandler(err, req, res, next) {
   res.status(status).json({ error })
 }
 
-app.use(jsonErrorHandler)
+rootApp.use('/o', validateOfficePath)
+rootApp.use('/o/:officeId', resolveOffice,
+  (req, res, next) => (req.path === '/event' ? eventJsonBody : jsonBody)(req, res, next),
+  app, (_req, res) => res.sendStatus(404))
+rootApp.use('/o', unknownOffice)
+rootApp.use(legacyOffice, app)
+rootApp.use(jsonErrorHandler)
 
 // ---------------------------------------------------------------------------
 // WebSocket server
@@ -3491,11 +3578,20 @@ function redactForReadOnly(payload) {
 }
 
 /** Connections that presented the file token (membership dies with the socket). */
-const trustedClients = new WeakSet()
+const trustedClients = scopedState('trustedClients')
 
-const httpServer = createServer(app)
+const httpServer = createServer(rootApp)
 
-const wss = new WebSocketServer({ server: httpServer, path: '/ws', handleProtocols })
+const wss = new WebSocketServer({ noServer: true, handleProtocols })
+httpServer.on('upgrade', (req, socket, head) => {
+  const resolved = upgradeOffice((req.url ?? '').split('?')[0])
+  if (!resolved.office) {
+    const body = JSON.stringify({ error: resolved.error })
+    socket.end(`HTTP/1.1 ${resolved.status} ${resolved.status === 404 ? 'Not Found' : 'Not Implemented'}\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`)
+    return
+  }
+  runInOffice(resolved.office, () => wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req)))
+})
 
 wss.on('connection', (ws, req) => {
   // Host validation — loopback hosts only (see isAllowedHost): defence in
@@ -3513,6 +3609,8 @@ wss.on('connection', (ws, req) => {
     return
   }
 
+  const office = currentOffice()
+  ws.office = office // membership lives on the socket and dies with it
   const trusted = tokenMatches(wsTokenFrom(req))
   if (trusted) trustedClients.add(ws)
   const ip = req.socket.remoteAddress ?? 'unknown'
@@ -3525,23 +3623,26 @@ wss.on('connection', (ws, req) => {
   // agents in their completed grace window — a client seats every entry, and
   // nothing would ever walk those out). A read-only connection gets the same
   // office without the conversation (redactForReadOnly) and no UI token.
-  const pending = permissions.pending()
+  // Stores behind these fields are still the default office's single instances: another office gets them empty
+  // (not scoped yet) rather than the default office's data.
+  const isDefault = office === defaultOffice
+  const pending = isDefault ? permissions.pending() : []
   const snapshot = {
     type: 'snapshot',
     activeAgents: liveAgents(),
     sessions: Array.from(sessions.values()).map(s => sessionToJSON(s, { withText: trusted })),
-    statuses: status.summary(),
-    health: health.snapshot(),
-    mcpServers: discoverMcpServers(),
+    statuses: isDefault ? status.summary() : null, // not scoped yet
+    health: isDefault ? health.snapshot() : null, // not scoped yet
+    mcpServers: isDefault ? discoverMcpServers() : [], // not scoped yet
     // Permission dialogs waiting on the office, and the token that answers
     // them — handed out here, to a trusted connection, and nowhere else (see UI_TOKEN)
     pendingPermissions: trusted ? pending : pending.map(redactPermission),
-    ...(trusted ? { uiToken: UI_TOKEN } : {}),
+    ...(trusted ? { uiToken: currentOffice().auth.uiToken } : {}),
     // The last few signals (see Signals), oldest first, as their broadcasts carried them
     signals: signalRing.slice(-SNAPSHOT_SIGNALS).map(trusted ? publicSignal : readOnlySignal),
     // Each session's task board, the most recently changed first: subjects and
     // states only, never a description, so read-only connections get it as is
-    taskBoards: tasks.boards(),
+    taskBoards: isDefault ? tasks.boards() : [], // not scoped yet
     timestamp: Date.now(),
   }
   ws.send(JSON.stringify(snapshot))
@@ -3563,12 +3664,13 @@ wss.on('connection', (ws, req) => {
  * skipped rather than sent as "null".
  */
 function broadcast(payload) {
+  const office = currentOffice() // throws with no office in scope while several are live
   if (!payload) return
   const full = JSON.stringify(payload)
   let readOnly  // undefined: not built yet; null: withheld from read-only clients
   let sent = 0
   for (const client of wss.clients) {
-    if (client.readyState !== WebSocket.OPEN) continue
+    if (client.readyState !== WebSocket.OPEN || client.office !== office) continue
     let msg = full
     if (!trustedClients.has(client)) {
       if (readOnly === undefined) {
@@ -3634,7 +3736,8 @@ export function start({ port = PORT, host = readHost() } = {}) {
     }
   }
 
-  httpServer.listen(port, host, () => {
+  httpServer.listen(port, host, () => runInOffice(defaultOffice, () => {
+    startCatalogueRefresh()
     writeTokenFile()
     // Tighten the runtime dir and the chat database to 0600/0700 even when an
     // installer, a start script or an older build created them world-readable
@@ -3690,7 +3793,7 @@ export function start({ port = PORT, host = readHost() } = {}) {
     console.log(`  Agent Office: ${officeLink(base)}${UI_AVAILABLE ? '' : '  (the Vite dev server)'}`)
     console.log('  Open that link once per browser (or run `npm run open`); a bare address shows the office read-only.')
     console.log()
-  })
+  }))
 }
 
 /** The page URL with the office token in its fragment, the one way the page learns it. */
@@ -3712,7 +3815,7 @@ function isMainModule() {
 if (isMainModule()) start()
 
 export {
-  app,
+  rootApp as app,
   httpServer,
   wss,
   AUTH_TOKEN,
@@ -3720,8 +3823,6 @@ export {
   UI_TOKEN,
   RUNTIME_DIR,
   TOKEN_FILE,
-  TOKEN_PATTERN,
-  readTokenFile,
   WS_PROTOCOL,
   WS_TOKEN_PROTOCOL_PREFIX,
   redactForReadOnly,

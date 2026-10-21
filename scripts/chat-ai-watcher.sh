@@ -13,7 +13,9 @@
 #   AGENT_OFFICE_HOME            state dir            (default ~/.agent-office)
 #   AGENT_OFFICE_PORT            office server port   (default 3334)
 #   CHAT_AI_POLL_INTERVAL        seconds between polls (default 8)
-#   CHAT_AI_MODEL                model for `claude -p` (default claude-haiku-5-5)
+#   CHAT_AI_BACKEND              default: the choice saved on the office start screen (backend.json), else claude; any adapter in server/adapters.mjs (claude, codex, agy, opencode, qoder)
+#   CHAT_AI_MODEL                model for the backend (default: the adapter's own default model)
+#   CHAT_AI_DEBUG                set to log the raw reply and the backend's stderr
 #   CHAT_AI_TIMEOUT              seconds before a `claude -p` call is killed (default 60)
 #   CHAT_AI_MAX_REPLIES_PER_MIN  backstop against reply loops (default 5)
 # =============================================================================
@@ -23,7 +25,20 @@ set -u
 PORT="${AGENT_OFFICE_PORT:-3334}"
 SERVER="http://127.0.0.1:$PORT"
 POLL_INTERVAL="${CHAT_AI_POLL_INTERVAL:-8}"
-MODEL="${CHAT_AI_MODEL:-claude-haiku-5-5}"
+# load_backend — which service answers: CHAT_AI_BACKEND, else the one picked on the
+# office start screen (server/settings.mjs), else claude. Run again before each
+# reply, so a pick in the page takes effect without restarting the watcher.
+SETTINGS_JS="$(dirname "${BASH_SOURCE[0]}")/../server/settings.mjs"
+load_backend() {
+    local backend bin saved
+    backend="${CHAT_AI_BACKEND:-$(node "$SETTINGS_JS" get backend 2>/dev/null)}"
+    backend="${backend:-claude}"
+    bin=$(node "$(dirname "${BASH_SOURCE[0]}")/adapter-bin.mjs" "$backend") || { echo "[chat-ai] Unknown backend '$backend', keeping ${BACKEND:-claude}"; return 1; }
+    BACKEND="$backend"; ADAPTER_BIN="$bin"
+    saved=$(node "$SETTINGS_JS" get model 2>/dev/null)
+    MODEL="${CHAT_AI_MODEL:-$saved}"  # empty: the adapter's own default model
+}
+load_backend || exit 1
 CLAUDE_TIMEOUT="${CHAT_AI_TIMEOUT:-60}"
 MAX_REPLIES_PER_MIN="${CHAT_AI_MAX_REPLIES_PER_MIN:-5}"
 
@@ -34,28 +49,14 @@ LOCK_FILE="$STATE_DIR/chat-ai.lock"
 ERR_FILE="$STATE_DIR/chat-ai-claude.err"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# These calls disable MSYS argument conversion to preserve /goal. Convert the script path explicitly first.
+DELEGATE_JS="$SCRIPT_DIR/delegate.mjs"
+if command -v cygpath >/dev/null 2>&1; then DELEGATE_JS=$(cygpath -m "$DELEGATE_JS"); fi
 
-# Flags for every `claude -p` call:
-#   --safe-mode           no hooks, CLAUDE.md, MCP servers, skills or plugins —
-#                         the office's own agent-tracker hook must not fire for
-#                         each reply, and no project MCP server should start.
-#                         (--bare also skips hooks but only accepts an API key,
-#                         not the OAuth login most people use.)
-#   --strict-mcp-config   belt and braces: ignore every MCP config not given
-#                         on the command line (and none is).
-#   --tools ""            nothing to call, so --max-turns 1 always ends in text.
-#   --no-session-persistence  do not litter ~/.claude with one-shot sessions.
-#   --name agent-office-bot   every `claude -p` registers in Claude Code's
-#                         session registry (~/.claude/sessions) for as long as
-#                         it runs, and the office reads that registry to show
-#                         sessions that have no hooks (server/sessions.js). The
-#                         name marks these calls as the office's own so they
-#                         never flicker through the session strip; keep it in
-#                         step with BOT_SESSION_NAME there.
-CLAUDE_ARGS=(--max-turns 1 --model "$MODEL" --safe-mode --strict-mcp-config --tools "" --no-session-persistence --name agent-office-bot)
+# The flags each service runs with (for claude: --safe-mode, --tools "", --name agent-office-bot ...)
+# live with its adapter in server/adapters.mjs.
 
 mkdir -p "$STATE_DIR"
-echo $$ > "$PID_FILE"
 # A lock left behind by a crashed or SIGKILLed watcher must not block this one
 rm -f "$LOCK_FILE"
 
@@ -83,40 +84,17 @@ if [ -z "$LAST_TS" ]; then
     save_last_ts
 fi
 
-echo "[chat-ai] Started (pid $$), polling $SERVER every ${POLL_INTERVAL}s, model $MODEL"
-command -v claude >/dev/null 2>&1 || echo "[chat-ai] Warning: 'claude' CLI not on PATH — messages will be seen but not answered"
+# Publish readiness only after the watermark is initialised; a caller may post as soon as this file exists.
+echo $$ > "$PID_FILE"
+echo "[chat-ai] Started (pid $$), polling $SERVER every ${POLL_INTERVAL}s, backend $BACKEND, model ${MODEL:-default}"
+command -v "$ADAPTER_BIN" >/dev/null 2>&1 || echo "[chat-ai] Warning: '$ADAPTER_BIN' CLI not on PATH — messages will be seen but not answered"
 
 cleanup() { trap - EXIT INT TERM; rm -f "$PID_FILE" "$LOCK_FILE" "$ERR_FILE" "$LAST_TS_FILE.tmp"; echo "[chat-ai] Stopped"; exit 0; }
 trap cleanup EXIT INT TERM
 
 # --- helpers -----------------------------------------------------------------
 
-# run_with_timeout SECS CMD... — GNU timeout where present, perl's alarm on
-# macOS (no coreutils), plain execution as a last resort.
-#
-# The command must stay in the watcher's process group: stop-office.sh and
-# start-office.sh's Ctrl+C stop the watcher with a kill of its whole group,
-# and that is what takes an in-flight `claude -p` down with it. GNU timeout
-# moves itself and the command into a group of their own unless given
-# --foreground, so without it the reply runs on (and bills) for up to
-# CHAT_AI_TIMEOUT after the office says it stopped. A timeout without the
-# flag (BusyBox) does not move them in the first place; perl's exec replaces
-# perl in place.
-TIMEOUT_FG=""
-if command -v timeout >/dev/null 2>&1 && timeout --foreground 5 true >/dev/null 2>&1; then
-    TIMEOUT_FG="--foreground"
-fi
-run_with_timeout() {
-    local secs="$1"; shift
-    if command -v timeout >/dev/null 2>&1; then
-        # $TIMEOUT_FG unquoted on purpose: empty means no flag
-        timeout $TIMEOUT_FG "$secs" "$@"
-    elif command -v perl >/dev/null 2>&1; then
-        perl -e 'alarm shift; exec @ARGV' "$secs" "$@"
-    else
-        "$@"
-    fi
-}
+# (Each reply's time limit, CHAT_AI_TIMEOUT, is enforced by scripts/chat-backend.mjs.)
 
 # Reply-rate backstop: epoch seconds of the `claude -p` calls made in the last
 # minute, so a misclassified message can never burn tokens indefinitely.
@@ -134,34 +112,17 @@ record_claude_call() { CALL_TIMES="$CALL_TIMES $(date +%s)"; }
 
 # Keyword routing: which office persona answers.
 route_message() {
-    printf '%s' "$1" | python3 -c "
-import sys
-msg = sys.stdin.read().lower()
-routes = [
-    (['bug','error','crash','fix','broken','debug','exception','traceback','stack trace','segfault'], 'debugger', 'Debugger'),
-    (['review','pr','merge','approve','lgtm','pull request','code review','diff'], 'code-reviewer', 'Reviewer'),
-    (['css','ui','ux','component','design','frontend','style','layout','responsive','tailwind','animation','pixel','theme','dark mode','light mode','color','font','spacing','padding','margin'], 'frontend-developer', 'Frontend'),
-    (['test','coverage','spec','jest','pytest','unit test','e2e','playwright','cypress','assertion','mock'], 'test-engineer', 'Tester'),
-    (['security','auth','vuln','xss','injection','csrf','cors','token','jwt','oauth','password','encrypt','ssl','tls','certificate'], 'security-auditor', 'Security'),
-    (['deploy','ci','pipeline','docker','devops','kubernetes','k8s','terraform','aws','gcp','azure','vercel','netlify','heroku','nginx','cdn','dns','domain','ssl cert'], 'devops-engineer', 'DevOps'),
-    (['perf','slow','optimize','speed','latency','bundle','lighthouse','core web vitals','memory leak','cache','lazy load','render','fps','bottleneck'], 'performance-engineer', 'PerfEng'),
-    (['db','query','schema','migration','sql','postgres','mysql','mongo','redis','index','join','table','row','column','orm','prisma','drizzle','supabase','neon'], 'database-architect', 'DBA'),
-    (['typescript','type','interface','generic','enum','union','infer','zod','validation','schema'], 'typescript-pro', 'TS Pro'),
-    (['ai','llm','prompt','model','openai','anthropic','embedding','vector','rag','agent','token','context window'], 'ai-engineer', 'AI Eng'),
-    (['api','endpoint','rest','graphql','webhook','route','middleware','request','response','http','fetch','axios','cors'], 'fullstack-developer', 'Fullstack'),
-    (['git','branch','commit','rebase','cherry-pick','stash','conflict','remote','origin'], 'code-reviewer', 'Reviewer'),
-    (['refactor','clean','abstract','pattern','solid','dry','yagni','architecture','module','package','monorepo'], 'architect-reviewer', 'Architect'),
-]
-for keywords, role, name in routes:
-    if any(w in msg for w in keywords):
-        print(f'{role}|{name}')
-        sys.exit(0)
-print('assistant|Claude')
-"
+    node "$SCRIPT_DIR/../server/roles.mjs" route "$1"
 }
 
 # Generate and post one reply. Returns non-zero when nothing was posted; the
 # caller (reply_to_message) clears the lock either way.
+# run_backend PROMPT — one text-only reply from the configured backend.
+# Anything but claude goes through scripts/chat-backend.mjs (server/adapters.mjs).
+run_backend() {
+    CHAT_AI_ROLE="${REPLY_ROLE:-}" CHAT_AI_MODEL="$MODEL" CHAT_AI_TIMEOUT="$CLAUDE_TIMEOUT" node "$SCRIPT_DIR/chat-backend.mjs" "$BACKEND" "$1"
+}
+
 do_reply() {
     local msg="$1"
     local agent_info agent_role agent_name dev_context persona context prompt reply posted
@@ -170,6 +131,13 @@ do_reply() {
     agent_role=${agent_info%%|*}
     agent_name=${agent_info#*|}
     echo "[chat-ai] Routed to: $agent_name ($agent_role)"
+    # The chat brain (Settings > General): the first step's service and model, unless CHAT_AI_BACKEND pins one for all
+    REPLY_ROLE="$agent_role"
+    reply_service="$BACKEND"; reply_model="$MODEL"
+    if [ -z "${CHAT_AI_BACKEND:-}" ]; then
+        agent_cfg=$(node "$SCRIPT_DIR/../server/brains.mjs" chat 2>/dev/null)
+        [ -n "$agent_cfg" ] && { IFS='|' read -r reply_service reply_model _ <<<"$agent_cfg"; }
+    fi
 
     # Gather dev context
     dev_context=$(bash "$SCRIPT_DIR/gather-context.sh" 2>/dev/null || echo "")
@@ -196,29 +164,36 @@ print(chr(10).join(lines))
     prompt="$persona
 
 You are responding as $agent_name, the office $agent_role. Stay in character.
+Respond in English. This is a conversational reply, not an execution channel. Never promise to start, take over, review, change files, or create a PR. Never claim work has finished. Task starts and status are reported by the delegation controller.
+This reply is being generated by $reply_service (model: ${reply_model:-its default}). If asked what AI is running or answering, say that; never guess otherwise.
 
 $dev_context
 
 Recent conversation:
 $context
 
-Reply to the latest message naturally. Keep it short (8-12 words). Continue the conversation — reference previous messages if relevant."
+Reply to the latest message naturally in at most three short sentences. Continue the conversation — reference previous messages if relevant."
 
-    echo "[chat-ai] Generating reply..."
+    echo "[chat-ai] Generating reply via $reply_service..."
     record_claude_call
-    reply=$(run_with_timeout "$CLAUDE_TIMEOUT" claude -p "$prompt" "${CLAUDE_ARGS[@]}" 2>"$ERR_FILE" \
-        | tr '\n' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    reply=$(run_backend "$prompt" 2>"$ERR_FILE" \
+        | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+    if [ -n "${CHAT_AI_DEBUG:-}" ]; then
+        echo "[chat-ai] debug: backend=$BACKEND model=${MODEL:-default} reply=[$reply]"
+        [ -s "$ERR_FILE" ] && sed 's/^/[chat-ai] debug stderr: /' "$ERR_FILE" | head -20
+    fi
 
     if [ -z "$reply" ]; then
         echo "[chat-ai] Empty reply from claude — nothing posted"
-        if [ -s "$ERR_FILE" ]; then sed 's/^/[chat-ai]   claude: /' "$ERR_FILE"; fi
+        if [ -s "$ERR_FILE" ]; then sed "s/^/[chat-ai]   $reply_service: /" "$ERR_FILE"; fi
         rm -f "$ERR_FILE"
         return 1
     fi
     rm -f "$ERR_FILE"
 
-    # Truncate to 15 words max
-    reply=$(printf '%s' "$reply" | python3 -c "import sys; w=sys.stdin.read().strip().split(); print(' '.join(w[:15]))")
+    # Preserve the separate NEXT_ACTION line so the UI can offer a scoped approval.
+    reply=$(printf '%s' "$reply" | python3 -c "import sys; print(sys.stdin.read().strip()[:1800])")
 
     echo "[chat-ai] Replying as $agent_name: $reply"
 
@@ -306,11 +281,15 @@ def typed_by_a_person(m):
             and text.strip() != ""
             and not text.lstrip().startswith("/"))
 human = [m for m in msgs if typed_by_a_person(m)]
+# /goal rows come from the server (role boss, type goal) only for a caller holding the token
+goals = [m for m in msgs if m.get("msg_type") == "goal" and m.get("role") == "boss"]
 print(max((int(m.get("timestamp") or 0) for m in msgs), default=0))
 print(human[-1]["text"].replace("\n", " ").replace("\r", " ") if human else "")
+print(goals[-1]["text"].replace("\n", " ").replace("\r", " ") if goals else "")
 ' 2>/dev/null)
     NEW_TS=$(printf '%s\n' "$PARSED" | sed -n 1p)
     RESULT=$(printf '%s\n' "$PARSED" | sed -n 2p)
+    GOAL=$(printf '%s\n' "$PARSED" | sed -n 3p)
 
     # Advance past everything seen this poll — replies and announcements too
     case "$NEW_TS" in
@@ -321,8 +300,23 @@ print(human[-1]["text"].replace("\n", " ").replace("\r", " ") if human else "")
            fi ;;
     esac
 
+    # The boss approved a plan: the agent that made it goes to work (in the background)
+    if [ -n "$GOAL" ]; then
+        echo "[chat-ai] Goal approved: $GOAL"
+        MSYS_NO_PATHCONV=1 node "$DELEGATE_JS" goal "$GOAL" >/dev/null
+    fi
+
     # Skip if no new message from a person
     [ -z "$RESULT" ] && continue
+
+    # A job for an agent (not small talk) is taken by the delegation flow, which answers in the chat itself
+    if [ "$(MSYS_NO_PATHCONV=1 node "$DELEGATE_JS" message "$RESULT" 2>/dev/null)" = handled ]; then
+        echo "[chat-ai] Delegated: $RESULT"
+        continue
+    fi
+
+    last_backend="$BACKEND"; load_backend
+    [ "$BACKEND" != "$last_backend" ] && echo "[chat-ai] Backend is now $BACKEND, model ${MODEL:-default}"
 
     # Skip if already generating a reply (prevent concurrent claude -p)
     if [ -f "$LOCK_FILE" ]; then
@@ -335,8 +329,9 @@ print(human[-1]["text"].replace("\n", " ").replace("\r", " ") if human else "")
         continue
     fi
 
-    if ! command -v claude >/dev/null 2>&1; then
-        echo "[chat-ai] 'claude' CLI not on PATH — not answering: $RESULT"
+    # A chat brain may use a different service, or fall back to one that is installed.
+    if [ -n "${CHAT_AI_BACKEND:-}" ] && ! command -v "$ADAPTER_BIN" >/dev/null 2>&1; then
+        echo "[chat-ai] '$BACKEND' CLI not on PATH — not answering: $RESULT"
         continue
     fi
 

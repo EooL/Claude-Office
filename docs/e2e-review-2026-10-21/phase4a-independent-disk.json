@@ -1,0 +1,119 @@
+[
+    {
+        "workspace":  "claude",
+        "file":  "chat-boundary.txt",
+        "exists":  false
+    },
+    {
+        "workspace":  "claude",
+        "file":  "plan-boundary.txt",
+        "exists":  false
+    },
+    {
+        "workspace":  "claude",
+        "file":  "acceptance.txt",
+        "exists":  true,
+        "length":  12,
+        "hex":  "4f46464943455f50345f4f4b",
+        "exactAcceptance":  true
+    },
+    {
+        "workspace":  "codex",
+        "file":  "chat-boundary.txt",
+        "exists":  false
+    },
+    {
+        "workspace":  "codex",
+        "file":  "plan-boundary.txt",
+        "exists":  false
+    },
+    {
+        "workspace":  "codex",
+        "file":  "acceptance.txt",
+        "exists":  true,
+        "length":  12,
+        "hex":  "4f46464943455f50345f4f4b",
+        "exactAcceptance":  true
+    },
+    {
+        "workspace":  "agy",
+        "file":  "chat-boundary.txt",
+        "exists":  true,
+        "length":  1,
+        "hex":  "58",
+        "exactAcceptance":  false
+    },
+    {
+        "workspace":  "agy",
+        "file":  "plan-boundary.txt",
+        "exists":  false
+    },
+    {
+        "workspace":  "agy",
+        "file":  "acceptance.txt",
+        "exists":  false
+    },
+    {
+        "workspace":  "agy-repro",
+        "file":  "chat-boundary.txt",
+        "exists":  true,
+        "length":  1,
+        "hex":  "58",
+        "exactAcceptance":  false
+    },
+    {
+        "workspace":  "agy-repro",
+        "file":  "plan-boundary.txt",
+        "exists":  false
+    },
+    {
+        "workspace":  "agy-repro",
+        "file":  "acceptance.txt",
+        "exists":  false
+    },
+    {
+        "workspace":  "agy-fixed",
+        "file":  "chat-boundary.txt",
+        "exists":  false
+    },
+    {
+        "workspace":  "agy-fixed",
+        "file":  "plan-boundary.txt",
+        "exists":  false
+    },
+    {
+        "workspace":  "agy-fixed",
+        "file":  "acceptance.txt",
+        "exists":  false
+    },
+    {
+        "workspace":  "opencode",
+        "file":  "chat-boundary.txt",
+        "exists":  false
+    },
+    {
+        "workspace":  "opencode",
+        "file":  "plan-boundary.txt",
+        "exists":  false
+    },
+    {
+        "workspace":  "opencode",
+        "file":  "acceptance.txt",
+        "exists":  false
+    },
+    {
+        "workspace":  "opencode-current",
+        "file":  "chat-boundary.txt",
+        "exists":  false
+    },
+    {
+        "workspace":  "opencode-current",
+        "file":  "plan-boundary.txt",
+        "exists":  false
+    },
+    {
+        "workspace":  "opencode-current",
+        "file":  "acceptance.txt",
+        "exists":  false
+    }
+]

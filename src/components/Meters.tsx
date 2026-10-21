@@ -21,7 +21,7 @@
 
 import React, { useEffect, useRef, useState } from 'react'
 import {
-  useMeters, contextTone, rateTone, formatMoney, formatTokens, formatTokensExact,
+  useMeters, contextTone, rateTone, formatMoney, formatTokens, formatTokensExact, hasMeasuredCost, payrollCoverage,
   formatDuration, formatClockTime, electricityLevel, electricityPeriod,
   sessionLabel, modelLabel, CLUTTER_THRESHOLD, type SessionStatus,
   isEstimated, estimateMarker, formatMemory, estimateTip, needsStatusLineTip, STATUS_LINE_INSTALL,
@@ -40,16 +40,17 @@ function pct(n: number | null | undefined): string {
 
 function payrollTip(sessions: SessionStatus[], costToday: number, dollarsPerMin: number): string[] {
   // An estimated session has no cost to add (it needs the status line)
-  const paid = sessions.filter(s => !isEstimated(s))
+  const paid = sessions.filter(hasMeasuredCost)
   const live = paid.reduce((sum, s) => sum + s.cost, 0)
   const lines = paid.reduce((sum, s) => sum + s.linesAdded, 0)
   const removed = paid.reduce((sum, s) => sum + s.linesRemoved, 0)
+  const coverage = payrollCoverage(sessions)
   return [
-    `PAYROLL — $${live.toFixed(4)} across ${paid.length} session${paid.length === 1 ? '' : 's'} · $${dollarsPerMin.toFixed(4)}/min over the last 5 min`,
-    `today $${costToday.toFixed(4)} · +${lines} / -${removed} lines · estimated at list price`,
+    coverage === 'none' ? 'PAYROLL — cost not reported' : `PAYROLL — $${live.toFixed(4)}${coverage === 'partial' ? ' (partial)' : ''} across ${paid.length} session${paid.length === 1 ? '' : 's'} · $${dollarsPerMin.toFixed(4)}/min over the last 5 min`,
+    coverage === 'complete' ? `today $${costToday.toFixed(4)} · +${lines} / -${removed} lines · estimated at list price` : 'Costs are not reported by every session; totals cover measured costs only.',
     ...sessions.slice(0, MAX_ROWS).map(s => isEstimated(s)
       ? `${sessionLabel(s)}: needs the status line (${STATUS_LINE_INSTALL})`
-      : `${sessionLabel(s)}: $${s.cost.toFixed(4)} · ${modelLabel(s)} · ${formatDuration(s.durationMs)}`),
+      : `${sessionLabel(s)}: ${s.usageReported && !s.usageReported.includes('costUsd') ? 'cost not reported' : '$' + s.cost.toFixed(4)} · ${modelLabel(s)} · ${formatDuration(s.durationMs)}`),
   ]
 }
 
@@ -109,9 +110,11 @@ const Meters: React.FC<MetersProps> = ({ onNotice }) => {
   const reported = sessions.filter(s => !isEstimated(s))
   const estimated = sessions.filter(isEstimated)
   const needsStatusLine = reported.length === 0
-  const costLive = reported.reduce((sum, s) => sum + s.cost, 0)
+  const measured = sessions.filter(hasMeasuredCost)
+  const coverage = payrollCoverage(sessions)
+  const costLive = measured.reduce((sum, s) => sum + s.cost, 0)
   const costToday = totals?.costToday ?? costLive
-  const dollarsPerMin = totals?.dollarsPerMin ?? sessions.reduce((sum, s) => sum + s.burn.dollarsPerMin, 0)
+  const dollarsPerMin = coverage === 'complete' ? (totals?.dollarsPerMin ?? measured.reduce((sum, s) => sum + s.burn.dollarsPerMin, 0)) : measured.reduce((sum, s) => sum + s.burn.dollarsPerMin, 0)
   const tokensPerMin = totals?.tokensPerMin ?? sessions.reduce((sum, s) => sum + s.burn.tokensPerMin, 0)
 
   // MEMORY shows the fullest session; RATE LIMIT the freshest report of one
@@ -146,8 +149,10 @@ const Meters: React.FC<MetersProps> = ({ onNotice }) => {
         ) : (
           <div className="meter meter-payroll" data-testid="meter-payroll" {...hover(payrollTip(sessions, costToday, dollarsPerMin))}>
             <div className="meter-label">Payroll</div>
-            <div className="meter-value">{formatMoney(costLive)}</div>
-            <div className="meter-sub">{formatMoney(dollarsPerMin)}/min</div>
+            {/* A partial total counts only the sessions that reported a cost, so it is a lower bound: "≥" fits the narrow
+                tile where the word "(partial)" was cut off ("$1.25 (pa…"); the tooltip spells it out. */}
+            <div className="meter-value">{coverage === 'none' ? 'not reported' : `${coverage === 'partial' ? '≥' : ''}${formatMoney(costLive)}`}</div>
+            <div className="meter-sub">{coverage === 'none' ? 'not reported' : `${coverage === 'partial' ? '≥' : ''}${formatMoney(dollarsPerMin)}/min`}</div>
           </div>
         )}
 
@@ -191,7 +196,7 @@ const Meters: React.FC<MetersProps> = ({ onNotice }) => {
                 <span className="ms-model">{modelLabel(s)}</span>
                 <span className="ms-bar"><span className="ms-bar-fill" style={{ width: `${Math.min(100, s.context.used ?? 0)}%` }} /></span>
                 <span className="ms-pct">{est ? formatMemory(s) : pct(s.context.used)}{est && <span className="ms-est">{est}</span>}</span>
-                {est
+                {est || (s.usageReported && !s.usageReported.includes('costUsd'))
                   ? <span className="ms-cost ms-cost-none">–</span>
                   : <span className="ms-cost">{formatMoney(s.cost)}</span>}
               </div>

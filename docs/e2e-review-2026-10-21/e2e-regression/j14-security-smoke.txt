@@ -1,0 +1,19 @@
+=== J14 SECURITY SMOKE TEST ===
+Target: http://127.0.0.1:4988
+Date: 2026-10-21T13:43:44.819Z
+
+[PASS] Unauthenticated POST /event -> Status 401 (expected 401)
+[PASS] Unauthenticated POST /chat/reply -> Status 401 (expected 401)
+[PASS] Unauthenticated POST /a2a -> Status 401 (expected 401)
+[PASS] Unauthenticated POST /chat/seen -> Status 401 (expected 401)
+[PASS] Unauthenticated POST /chat/video-mode -> Status 401 (expected 401)
+[PASS] Unauthenticated GET /permission/perm_test123 -> Status 401 (expected 401)
+[PASS] Unauthenticated POST /permission/perm_test123 -> Status 401 (expected 401)
+[PASS] Unauthenticated POST /chat -> Status 401 (expected 401)
+[PASS] Bad Host: evil.attacker.com -> Status 421 (expected 421)
+[PASS] Bad Host IP: 192.168.1.100 -> Status 421 (expected 421)
+[PASS] Cross-Origin Origin: http://evil.com -> Status 403, ACAO: none (expected 403 / no CORS)
+[PASS] WebSocket without token auth -> trusted: false (expected false)
+[PASS] WebSocket without token redaction -> uiToken withheld: true
+
+=== J14 SECURITY SMOKE RESULT: ALL CHECKS PASSED ===

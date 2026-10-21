@@ -1,0 +1,50 @@
+{
+ "_doc": "Module-level mutable state in server/ and its scope for the Building/Levels plan (docs/building-and-levels.md section 4). tests/server-state-guard.test.ts fails when a new one appears: add it here as G0 (machine- or account-wide) or OFFICE (per project). Seeded from docs/building-phase0-inventory.md.",
+ "state": {
+  "adapters.mjs:OPENCODE_FREE": "G0",
+  "adapters.mjs:modelCache": "G0",
+  "adapters.mjs:pathCache": "G0",
+  "artifacts.js:TEXT": "G0",
+  "brainRoutes.js:building": "G0",
+  "building-runtime.mjs:offices": "G0",
+  "catalogue.mjs:BALANCED_WORDS": "G0",
+  "catalogue.mjs:DEPTH_WORDS": "G0",
+  "catalogue.mjs:SPEED_WORDS": "G0",
+  "config.js:IPV6_LOOPBACK": "G0",
+  "default-office.mjs:defaultOffice": "OFFICE",
+  "delegation.mjs:NO": "G0",
+  "delegation.mjs:YES": "G0",
+  "index.js:A2A_TYPES": "G0",
+  "index.js:ALLOWED_ORIGIN_PORTS": "G0",
+  "index.js:KNOWN_EVENT_TYPES": "G0",
+  "index.js:LOG_PROMPTS_LEVELS": "G0",
+  "index.js:LOOPBACK_HOSTS": "G0",
+  "index.js:MAIN_STATES": "G0",
+  "index.js:NEEDS_YOU_KINDS": "G0",
+  "index.js:PRIVILEGED_COMMANDS": "G0",
+  "index.js:SIGNAL_KINDS": "G0",
+  "index.js:TRANSCRIPT_MSG_TYPES": "G0",
+  "index.js:app": "G0",
+  "index.js:health": "G0",
+  "index.js:httpServer": "G0",
+  "index.js:permissions": "OFFICE",
+  "index.js:registry": "G0",
+  "index.js:rootApp": "G0",
+  "index.js:setInterval": "G0",
+  "index.js:status": "OFFICE",
+  "index.js:tasks": "OFFICE",
+  "index.js:wss": "G0",
+  "office-scope.mjs:scope": "G0",
+  "registry.mjs:cache": "G0",
+  "sessions.js:bootTimeS": "G0",
+  "status.js:STATUS_TYPES": "G0",
+  "tasks.js:STATUS_SET": "G0"
+ },
+ "ceilings": {
+  "processCwd": {
+   "artifacts.js": 1,
+   "index.js": 0
+  },
+  "homeDirUsers": []
+ }
+}

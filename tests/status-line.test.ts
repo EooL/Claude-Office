@@ -5,16 +5,17 @@
  * around). Runs the real script against a capture server.
  */
 
-import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { execFile } from 'node:child_process'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 const SCRIPT = fileURLToPath(new URL('../hooks/status-line.sh', import.meta.url))
+const bashPath = (file: string) => file.replace(/\\/g, '/').replace(/^([A-Za-z]):\//, (_, drive: string) => `/${drive.toLowerCase()}/`)
 
 /**
  * The stdin JSON Claude Code 2.1.300 gives a statusLine command: the shape
@@ -138,15 +139,22 @@ function officeHome({ token, prev, subagentPrev }: { token?: string; prev?: stri
   return home
 }
 
-function run(payload: unknown, home: string, { args = [], url = serverUrl, env = {} }: { args?: string[]; url?: string; env?: Record<string, string> } = {}) {
-  const started = Date.now()
-  const out = execFileSync('bash', [SCRIPT, ...args], {
-    input: typeof payload === 'string' ? payload : JSON.stringify(payload),
+async function run(payload: unknown, home: string, { args = [], url = serverUrl, env = {} }: { args?: string[]; url?: string; env?: Record<string, string> } = {}) {
+  // Keep the capture server's event loop live while background curl sends its
+  // body. A synchronous child blocked this loop until curl's one-second deadline.
+  const child = execFile('bash', [SCRIPT, ...args], {
     encoding: 'utf8',
     timeout: 10_000,
     env: { ...process.env, AGENT_OFFICE_STATUS_URL: url, AGENT_OFFICE_HOME: home, AGENT_OFFICE_PREV_STATUSLINE: '', ...env },
   })
-  return { out, ms: Date.now() - started }
+  const completed = new Promise<string>((resolve, reject) => {
+    let out = ''
+    child.stdout!.on('data', chunk => { out += chunk })
+    child.once('error', reject)
+    child.once('close', (code, signal) => code === 0 ? resolve(out) : reject(new Error(`status-line exited ${code ?? signal}`)))
+  })
+  child.stdin!.end(typeof payload === 'string' ? payload : JSON.stringify(payload))
+  return { out: await completed }
 }
 
 /** The backgrounded curl lands shortly after the script exits. */
@@ -156,10 +164,16 @@ async function posted(count = 1, ms = 3000): Promise<Captured[]> {
   return captured
 }
 
+async function waitForFile(file: string) {
+  const deadline = Date.now() + 3000
+  while (!existsSync(file) && Date.now() < deadline) await new Promise(r => setTimeout(r, 25))
+  expect(existsSync(file)).toBe(true)
+}
+
 describe('status-line.sh: statusLine', () => {
   it('prints "<model> · ctx <used>% · $<cost>" and POSTs a session_status SIGNED (no token on the wire)', async () => {
     const home = officeHome({ token: 'a'.repeat(64) })
-    const { out } = run(STATUS_JSON, home)
+    const { out } = await run(STATUS_JSON, home)
     expect(out).toBe('Haiku 5.5 · ctx 4% · $0.01\n')
 
     const [req] = await posted()
@@ -173,7 +187,7 @@ describe('status-line.sh: statusLine', () => {
   })
 
   it('posts without an Authorization or signature header when there is no token file', async () => {
-    const { out } = run(STATUS_JSON, officeHome())
+    const { out } = await run(STATUS_JSON, officeHome())
     expect(out).toBe('Haiku 5.5 · ctx 4% · $0.01\n')
     const [req] = await posted()
     expect(req.authorization).toBeUndefined()
@@ -183,7 +197,7 @@ describe('status-line.sh: statusLine', () => {
 
   it('posts to 127.0.0.1:$AGENT_OFFICE_PORT/status when AGENT_OFFICE_STATUS_URL is unset', async () => {
     const port = new URL(serverUrl).port
-    const { out } = run(STATUS_JSON, officeHome(), { env: { AGENT_OFFICE_STATUS_URL: '', AGENT_OFFICE_PORT: port } })
+    const { out } = await run(STATUS_JSON, officeHome(), { env: { AGENT_OFFICE_STATUS_URL: '', AGENT_OFFICE_PORT: port } })
     expect(out).toBe('Haiku 5.5 · ctx 4% · $0.01\n')
     const [req] = await posted()
     expect(req).toBeDefined()
@@ -193,7 +207,7 @@ describe('status-line.sh: statusLine', () => {
 
   it('AGENT_OFFICE_STATUS_URL wins over AGENT_OFFICE_PORT', async () => {
     const closedPort = new URL(closedUrl).port
-    run(STATUS_JSON, officeHome(), { env: { AGENT_OFFICE_PORT: closedPort } })
+    await run(STATUS_JSON, officeHome(), { env: { AGENT_OFFICE_PORT: closedPort } })
     const [req] = await posted()
     expect(req).toBeDefined()
     expect(req.body.type).toBe('session_status')
@@ -216,7 +230,7 @@ describe('status-line.sh: statusLine', () => {
       context_window: { total_input_tokens: 0, total_output_tokens: 0, context_window_size: 200000, used_percentage: null, remaining_percentage: null, current_usage: null },
       exceeds_200k_tokens: false,
     }
-    const { out } = run(early, officeHome())
+    const { out } = await run(early, officeHome())
     expect(out).toBe('Opus · ctx 0% · $0.00\n')
     const [req] = await posted()
     expect(req.body).toEqual({
@@ -230,7 +244,7 @@ describe('status-line.sh: statusLine', () => {
 
   it('falls back to cwd for the project when workspace is absent, and forwards spend_limit', async () => {
     const payload = { ...STATUS_JSON, workspace: undefined, cwd: '/srv/apps/billing-api', rate_limits: { spend_limit: { used_percentage: 62.8, resets_at: 1740787200, used_usd: 314.12, limit_usd: 500, period: 'monthly' } } }
-    run(payload, officeHome())
+    await run(payload, officeHome())
     const [req] = await posted()
     expect(req.body.project).toBe('billing-api')
     expect(req.body.rateLimits).toEqual({ spendLimit: 62.8, spendLimitResetsAt: 1740787200 })
@@ -239,47 +253,67 @@ describe('status-line.sh: statusLine', () => {
   it('chains the status line it was wrapped around: same stdin, its output is printed, the POST still goes out', async () => {
     const prev = `python3 -I -c 'import json,sys; d=json.load(sys.stdin); print("prev:" + d["model"]["display_name"] + ":" + str(d["context_window"]["used_percentage"]))'`
     const home = officeHome({ token: 't', prev })
-    const { out } = run(STATUS_JSON, home)
+    const { out } = await run(STATUS_JSON, home)
     expect(out).toBe('prev:Haiku 5.5:4.4\n')
     const [req] = await posted()
     expect(req.body).toEqual(EXPECTED_EVENT)
   })
 
   it('AGENT_OFFICE_PREV_STATUSLINE overrides the saved command', async () => {
-    const { out } = run(STATUS_JSON, officeHome({ prev: 'echo from-file' }), { env: { AGENT_OFFICE_PREV_STATUSLINE: 'echo from-env' } })
+    const { out } = await run(STATUS_JSON, officeHome({ prev: 'echo from-file' }), { env: { AGENT_OFFICE_PREV_STATUSLINE: 'echo from-env' } })
     expect(out).toBe('from-env\n')
     expect(await posted()).toHaveLength(1)
   })
 
   it('prints the default line when the chained command fails or prints nothing', async () => {
-    expect(run(STATUS_JSON, officeHome({ prev: 'exit 3' })).out).toBe('Haiku 5.5 · ctx 4% · $0.01\n')
-    expect(run(STATUS_JSON, officeHome({ prev: 'cat > /dev/null' })).out).toBe('Haiku 5.5 · ctx 4% · $0.01\n')
+    expect((await run(STATUS_JSON, officeHome({ prev: 'exit 3' }))).out).toBe('Haiku 5.5 · ctx 4% · $0.01\n')
+    expect((await run(STATUS_JSON, officeHome({ prev: 'cat > /dev/null' }))).out).toBe('Haiku 5.5 · ctx 4% · $0.01\n')
     expect(await posted(2)).toHaveLength(2)
   })
 
-  it('still prints the line, exits 0 and does not wait when the server is down', () => {
-    const { out, ms } = run(STATUS_JSON, officeHome({ token: 't' }), { url: closedUrl })
-    expect(out).toBe('Haiku 5.5 · ctx 4% · $0.01\n')
-    // The curl is backgrounded with --max-time 1; the script itself is one python3 call
-    expect(ms).toBeLessThan(1500)
-    expect(captured).toHaveLength(0)
+  it('prints and exits without waiting for a blocked network sender', async () => {
+    const home = officeHome({ token: 't' })
+    const release = join(home, 'release')
+    const finished = join(home, 'finished')
+    const curl = join(home, 'curl')
+    const bashEnv = join(home, 'bash-env')
+    writeFileSync(curl, '#!/usr/bin/env bash\nwhile [ ! -f "$STATUS_TEST_RELEASE" ]; do sleep 0.02; done\ntouch "$STATUS_TEST_FINISHED"\n')
+    // Git's bin/bash launcher prepends /usr/bin at startup. Prepend the fake
+    // sender inside the shell so the system curl cannot bypass the barrier.
+    writeFileSync(bashEnv, 'export PATH="$STATUS_TEST_BIN:$PATH"\n')
+    chmodSync(curl, 0o755)
+    try {
+      // Only this test can release curl, and only after the status-line exits.
+      // This tests ordering rather than host-dependent process startup latency.
+      const { out } = await run(STATUS_JSON, home, { url: closedUrl, env: {
+        PATH: [home, process.env.PATH ?? process.env.Path].join(delimiter),
+        BASH_ENV: bashPath(bashEnv), STATUS_TEST_BIN: bashPath(home),
+        STATUS_TEST_RELEASE: bashPath(release), STATUS_TEST_FINISHED: bashPath(finished),
+      } })
+      expect(out).toBe('Haiku 5.5 · ctx 4% · $0.01\n')
+      expect(existsSync(finished)).toBe(false)
+      expect(captured).toHaveLength(0)
+    } finally {
+      writeFileSync(release, '')
+      await waitForFile(finished)
+    }
   })
 
   it('exits 0 on garbage stdin and posts nothing', async () => {
-    const { out } = run('this is not json', officeHome())
+    const { out } = await run('this is not json', officeHome())
     expect(out).toBe('Claude · ctx 0% · $0.00\n')
     await new Promise(r => setTimeout(r, 300))
     expect(captured).toHaveLength(0)
   })
 
-  it('exits 0 and prints nothing on empty stdin', () => {
-    expect(run('', officeHome()).out).toBe('')
+  it('exits 0 and prints nothing on empty stdin', async () => {
+    expect((await run('', officeHome())).out).toBe('')
   })
 })
 
 describe('status-line.sh --subagents: subagentStatusLine', () => {
   it('posts an agent_status with every visible row\'s tokens and context size, printing nothing (default rows kept)', async () => {
-    const { out } = run(SUBAGENT_JSON, officeHome({ token: 'a'.repeat(64) }), { args: ['--subagents'] })
+    const { out } = await run(SUBAGENT_JSON, officeHome({ token: 'a'.repeat(64) }), { args: ['--subagents'] })
     expect(out).toBe('')
     const [req] = await posted()
     expect(req.authorization).toBeUndefined()
@@ -295,7 +329,7 @@ describe('status-line.sh --subagents: subagentStatusLine', () => {
   })
 
   it('posts nothing when there are no rows', async () => {
-    const { out } = run({ ...SUBAGENT_JSON, tasks: [] }, officeHome(), { args: ['--subagents'] })
+    const { out } = await run({ ...SUBAGENT_JSON, tasks: [] }, officeHome(), { args: ['--subagents'] })
     expect(out).toBe('')
     await new Promise(r => setTimeout(r, 300))
     expect(captured).toHaveLength(0)
@@ -303,7 +337,7 @@ describe('status-line.sh --subagents: subagentStatusLine', () => {
 
   it('prints the rows of a chained subagentStatusLine command', async () => {
     const prev = `python3 -I -c 'import json,sys; [print(json.dumps({"id": t["id"], "content": t["label"]})) for t in json.load(sys.stdin)["tasks"]]'`
-    const { out } = run(SUBAGENT_JSON, officeHome({ subagentPrev: prev }), { args: ['--subagents'] })
+    const { out } = await run(SUBAGENT_JSON, officeHome({ subagentPrev: prev }), { args: ['--subagents'] })
     expect(out.trim().split('\n').map(l => JSON.parse(l))).toEqual([
       { id: 'ac5ff55b850b4fecf', content: 'Reading files' },
       { id: 'b17c2d9e4f0a1b2c3', content: 'done' },

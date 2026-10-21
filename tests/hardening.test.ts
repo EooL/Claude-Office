@@ -242,7 +242,8 @@ describe('start() and the token file (C09)', () => {
     await listening
 
     expect(readFileSync(tokenFile, 'utf8')).toBe(office.server.AUTH_TOKEN)
-    expect(mode(tokenFile)).toBe(0o600)
+    // NTFS stat.mode does not expose POSIX owner-only permission bits.
+    if (process.platform !== 'win32') expect(mode(tokenFile)).toBe(0o600)
     await new Promise<void>(res => office.server.wss.close(() => res()))
     await new Promise<void>(res => office.server.httpServer.close(() => res()))
   })
@@ -394,7 +395,8 @@ describe('the answer-permissions marker is removed when the office stops (findin
 })
 
 describe('chat.db and the runtime dir are private, and repaired on an upgrade (findings 29/32)', () => {
-  it('chat.db, its -wal/-shm and the dir are tightened even when an older build left them world-readable', async () => {
+  // Windows chmod/stat cannot represent POSIX directory/WAL permission repair.
+  it.skipIf(process.platform === 'win32')('chat.db, its -wal/-shm and the dir are tightened even when an older build left them world-readable', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'agent-office-modes-'))
     try {
       // First import creates the office and its chat database (opening it in
@@ -429,7 +431,8 @@ describe('runtime files are private (C17)', () => {
   })
   afterAll(() => removeOffice(office))
 
-  it('inbox, last-chat, agents.json and the chat-monitor state are 0600, the inbox dir 0700', async () => {
+  // This case specifically verifies POSIX mode repair; Windows ACLs need a separate audit.
+  it.skipIf(process.platform === 'win32')('inbox, last-chat, agents.json and the chat-monitor state are 0600, the inbox dir 0700', async () => {
     // A last-chat an older version left world-readable gets fixed on the next write
     writeFileSync(join(office.dir, 'last-chat'), '{}')
     chmodSync(join(office.dir, 'last-chat'), 0o644)

@@ -23,6 +23,8 @@
  *                   effort?, exceeds200k, version? }
  *   POST /status  { type: 'agent_status', sessionId,
  *                   agents: [{ id, tokens, contextSize?, status?, agentType?, name?, model?, description? }] }
+ *   POST /usage   { service, label, model, durationMs, usage: { inputTokens, outputTokens, costUsd, ... } }
+ *                 one adapter run (server/adapters.mjs), kept as the record `usage-<service>`
  *   GET  /status  → { sessions: [...], totals: { costToday, tokensPerMin, dollarsPerMin } }
  *
  * Each session carries `source` ('statusline' | 'transcript'; absent on a
@@ -110,6 +112,14 @@ export function validateStatus(body) {
   if (!STATUS_TYPES.has(body.type)) return `Unknown status type: ${body.type}`
   if (!body.sessionId || typeof body.sessionId !== 'string') return 'Missing sessionId'
   if (body.type === 'agent_status' && !Array.isArray(body.agents)) return 'Missing agents'
+  return null
+}
+
+/** Body check for POST /usage: an error string, or null when it can be ingested. */
+export function validateUsage(body) {
+  if (!body || typeof body !== 'object') return 'Missing body'
+  if (!body.service || typeof body.service !== 'string') return 'Missing service'
+  if (body.usage !== undefined && (!body.usage || typeof body.usage !== 'object')) return 'usage must be an object'
   return null
 }
 
@@ -302,6 +312,40 @@ export function createStatusStore({ staleMs = 120 * 60_000, sessions = null, now
     return { type: 'agent_status', sessionId: id, agents: rec.agents, timestamp: t }
   }
 
+  /**
+   * One run of a service through server/adapters.mjs (chat reply, office-run) as
+   * PAYROLL and ELECTRICITY: a record per service, `usage-<service>`, that adds
+   * each run's cost to its own and counts the run's input + output tokens as one
+   * round-trip. Unlike the status line it reports no context fill (used stays
+   * null, so it never wins the MEMORY tile) and a CLI that gave no cost adds 0.
+   * The body is what the adapter contract returns: { service, label, model,
+   * durationMs, usage: { inputTokens, outputTokens, costUsd, ... } }.
+   */
+  function ingestUsage(body, t = now()) {
+    const service = clampString(body.service, 40)
+    const id = `usage-${service}`
+    const rec = statuses.get(id) ?? create(id, t)
+    const u = body.usage && typeof body.usage === 'object' ? body.usage : {}
+    const reported = Array.isArray(body.reported) ? body.reported.filter(k => typeof k === 'string' && Object.hasOwn(u, k)) : Object.keys(u)
+    rec.usageReported = [...new Set([...(rec.usageReported ?? []), ...reported])]
+    const input = clampNumber(u.inputTokens) ?? 0
+    const output = clampNumber(u.outputTokens) ?? 0
+    rec.source = 'statusline'
+    rec.project = clampString(body.label) || rec.project || service
+    rec.model = clampString(body.model) || rec.model || clampString(body.label) || service
+    rec.cost += clampNumber(u.costUsd) ?? 0
+    rec.durationMs += clampNumber(body.durationMs) ?? 0
+    rec.context = { used: null, size: null, input, output }
+    rec.updatedAt = t
+    rec.history.push({ t, cost: rec.cost, tokens: input + output })
+    if (rec.history.length > HISTORY_POINTS) rec.history.shift()
+    rec.lastSample = `${input}:${output}`
+    const session = toJSON(rec, t)
+    rec.shownBurn = session.burn
+    console.log(`[status] ${rec.project} · +${input + output} tokens · $${rec.cost.toFixed(4)} · ${session.burn.tokensPerMin} tok/min`)
+    return { type: 'session_status', sessionId: id, session, totals: shown(t), timestamp: t }
+  }
+
   /** Ingest a validated body; returns the event to broadcast. */
   function ingest(body, t = now()) {
     return body.type === 'agent_status' ? ingestAgents(body, t) : ingestSession(body, t)
@@ -390,6 +434,7 @@ export function createStatusStore({ staleMs = 120 * 60_000, sessions = null, now
 
   return {
     ingest,
+    ingestUsage,
     applyEstimate,
     reportsStatusLine,
     expireStale,
@@ -442,6 +487,13 @@ export function mountStatus(app, { requireToken, broadcast, staleMs, sessions, s
     const event = store.ingest(req.body)
     if (req.body.type === 'session_status') estimator.forget(event.sessionId)
     if (event) broadcast(event)
+    res.json({ ok: true })
+  })
+
+  app.post('/usage', requireToken, (req, res) => {
+    const validationError = validateUsage(req.body)
+    if (validationError) return res.status(400).json({ error: validationError })
+    broadcast(store.ingestUsage(req.body))
     res.json({ ok: true })
   })
 

@@ -3,9 +3,9 @@
  * payload into an office event. The bash wrapper reads stdin, pipes the
  * payload into the Python (never through an environment variable or an
  * argument: a big tool_response would hit the exec's single-argument limit)
- * and curls the result, so the heredoc is lifted out (the same awk the repo
- * uses by hand) and run against real 2.1.x payload shapes exactly as the
- * wrapper runs it: `python3 -I -c <source>` with the payload on stdin. The
+ * and curls the result. The Python companion is run against real 2.1.x
+ * payload shapes exactly as the wrapper runs it: `python3 -I -X utf8 <file>`
+ * with the payload on stdin. The
  * last group runs the whole script with a fake `curl` on PATH.
  */
 
@@ -13,13 +13,13 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createHash, createHmac } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, describe, expect, it } from 'vitest'
 
 const TRACKER = fileURLToPath(new URL('../hooks/agent-tracker.sh', import.meta.url))
 
-const PYTHON = execFileSync('awk', ["/<<'PYEOF'/{f=1;next} /^PYEOF$/{f=0} f", TRACKER], { encoding: 'utf8' })
+const PYTHON = readFileSync(new URL('../hooks/agent-tracker.py', import.meta.url), 'utf8')
 if (!PYTHON.includes('hook_event_name')) throw new Error('could not extract the Python section from agent-tracker.sh')
 
 // The Python looks for $AGENT_OFFICE_HOME/answer-permissions (the server keeps
@@ -27,6 +27,10 @@ if (!PYTHON.includes('hook_event_name')) throw new Error('could not extract the 
 // empty dir so a marker in the developer's real ~/.agent-office never changes
 // what the tests below see. The answer-from-the-office group sets its own.
 const NO_MARKER_HOME = mkdtempSync(join(tmpdir(), 'agent-office-hook-home-'))
+// The tracker is larger than Windows' command-line limit; execute a file while
+// keeping the event payload on stdin, exactly as the wrapper does.
+const PYTHON_FILE = join(NO_MARKER_HOME, 'tracker.py')
+writeFileSync(PYTHON_FILE, PYTHON)
 afterAll(() => rmSync(NO_MARKER_HOME, { recursive: true, force: true }))
 
 /**
@@ -38,12 +42,13 @@ afterAll(() => rmSync(NO_MARKER_HOME, { recursive: true, force: true }))
  * (sed -n), so the empty line there is harmless.
  */
 function runHookLines(payload: unknown, env: Record<string, string> = {}): string[] {
-  const out = execFileSync('python3', ['-I', '-c', PYTHON], {
+  const out = execFileSync('python3', ['-I', '-X', 'utf8', PYTHON_FILE], {
     input: typeof payload === 'string' ? payload : JSON.stringify(payload),
     encoding: 'utf8',
+    timeout: 5000,
     env: { ...process.env, AGENT_OFFICE_HOME: NO_MARKER_HOME, ...env },
   }).trim()
-  return out ? out.split('\n').filter(line => line !== '') : []
+  return out ? out.split(/\r?\n/).filter(line => line !== '') : []
 }
 
 /** Canonical JSON as the hook's call_key writes it: keys sorted, no spaces. */
@@ -1006,6 +1011,10 @@ describe('agent-tracker.sh: the bash wrapper', () => {
   mkdirSync(officeHome)
   writeFileSync(join(bin, 'curl'), `#!/usr/bin/env bash\npython3 -c 'import json,sys; print(json.dumps({"argv": sys.argv[1:], "stdin": sys.stdin.read()}))' "$@" >> "$FAKE_CURL_LOG"\n`)
   chmodSync(join(bin, 'curl'), 0o755)
+  const bashEnv = join(dir, 'bash-env.sh')
+  // Git's bin/bash launcher prepends its own tools after receiving Node PATH.
+  // Install the fake inside the shell, using MSYS paths (C:/ contains ':').
+  writeFileSync(bashEnv, 'export PATH="$(cygpath -u "$TEST_FAKE_BIN"):$PATH"\n')
   afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
   const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
@@ -1013,7 +1022,8 @@ describe('agent-tracker.sh: the bash wrapper', () => {
   /** Run the script on a payload; resolve with its stdout/status and what curl was given (the POST is backgrounded). */
   async function runScript(payload: unknown, extraEnv: Record<string, string> = {}) {
     rmSync(log, { force: true })
-    const env: Record<string, string | undefined> = { ...process.env, PATH: `${bin}:${process.env.PATH}`, AGENT_OFFICE_HOME: officeHome, FAKE_CURL_LOG: log }
+    const env: Record<string, string | undefined> = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, AGENT_OFFICE_HOME: officeHome, FAKE_CURL_LOG: log }
+    if (process.platform === 'win32') Object.assign(env, { BASH_ENV: bashEnv, TEST_FAKE_BIN: bin })
     // The caller's own office settings must not leak into the script under test
     delete env.AGENT_OFFICE_EVENT_URL
     delete env.AGENT_OFFICE_PORT
@@ -1022,6 +1032,7 @@ describe('agent-tracker.sh: the bash wrapper', () => {
       input: typeof payload === 'string' ? payload : JSON.stringify(payload),
       encoding: 'utf8',
       maxBuffer: 16 * 1024 * 1024,
+      timeout: 5000,
       env,
     })
     // The fake curl's `>>` creates the log before its python has written the
@@ -1406,7 +1417,7 @@ describe('agent-tracker.sh: answering a permission from the office', () => {
 
 /**
  * Signals: what a Bash command means (the "Signals" section of the Python).
- * classify_command is pure, so its table is driven directly: the heredoc is
+ * classify_command is pure, so its table is driven directly: the companion is
  * run with a tool-less payload (it defines everything and exits), the
  * classifier is loaded the way the hook loads it (load_signals) and called.
  * The rest drives whole payloads through the Python like every test above.
@@ -1432,7 +1443,7 @@ describe('agent-tracker.sh: signals', () => {
   ].join('\n')
 
   function drive(job: Record<string, unknown>) {
-    const out = execFileSync('python3', ['-I', '-c', DRIVER], {
+    const out = execFileSync('python3', ['-I', '-X', 'utf8', '-c', DRIVER], {
       input: JSON.stringify({ src: PYTHON, ...job }),
       encoding: 'utf8',
       env: { ...process.env, AGENT_OFFICE_HOME: NO_MARKER_HOME },
@@ -1731,7 +1742,7 @@ describe('agent-tracker.sh: signals', () => {
       expect(pre(wt)).toEqual([{ kind: 'push', target: 'wt', branch: 'feature/signals', toDefault: false, command: 'git push' }])
       // Detached HEAD: a push, nothing said about the branch
       writeFileSync(join(repo, '.git', 'HEAD'), '4f449fe0c1a1d1d6c3d13d5b9e1c0e7a7c1ab0f2\n')
-      expect(pre(repo)).toEqual([{ kind: 'push', target: repo.split('/').pop(), command: 'git push' }])
+      expect(pre(repo)).toEqual([{ kind: 'push', target: basename(repo), command: 'git push' }])
     } finally {
       rmSync(repo, { recursive: true, force: true })
     }

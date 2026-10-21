@@ -1,0 +1,22 @@
+{
+  "home": [
+    "agents.json",
+    "answer-permissions",
+    "auth-token",
+    "backend.json",
+    "brain-last.json",
+    "catalogue.json",
+    "chat.db",
+    "chat.db-shm",
+    "chat.db-wal",
+    "cooldowns.json",
+    "delegation.json",
+    "inbox/layout.json",
+    "last-chat",
+    "settings.json"
+  ],
+  "duringProbe": [
+    "circuit-probes/<hash>.lock"
+  ],
+  "root": []
+}

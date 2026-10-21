@@ -18,6 +18,7 @@
  */
 
 import express from 'express'
+import { randomUUID } from 'node:crypto'
 import { createServer } from 'http'
 import { WebSocketServer, WebSocket } from 'ws'
 import { readFileSync, existsSync, writeFileSync, mkdirSync, realpathSync, chmodSync, unlinkSync } from 'fs'
@@ -45,6 +46,8 @@ import { enrichProfile } from './agent-enrich.mjs'
 import { agentCard, checkAccess, claudeAgentFile, defaultProfile, listProfiles, loadProfile, parseProfile, ProfileError, resetProfile, saveProfile, serializeProfile, summarizeAccess, validateProfile } from './agent-profiles.mjs'
 import { loadMasterPrompt, validateMasterPrompt, saveMasterPrompt, resetMasterPrompt } from './master-prompt.mjs'
 import { defaultOffice } from './default-office.mjs'
+import { createChatStatus } from './chat-status.mjs'
+import { routeMessage } from './roles.mjs'
 import { currentOffice, officeTimeout, runInOffice, scopedObject, scopedState } from './office-scope.mjs'
 import { validateOfficePath, resolveOffice, legacyOffice, unknownOffice, upgradeOffice } from './office-routing.mjs'
 
@@ -1209,6 +1212,7 @@ loadAgents()
 
 const KNOWN_EVENT_TYPES = new Set([
   'agent_spawned',
+  'chat_status',
   'agent_working',
   'agent_completed',
   'agent_linked',
@@ -1492,6 +1496,7 @@ function validateEvent(body) {
   if (!body || typeof body !== 'object') return 'Missing body'
   if (!body.type || typeof body.type !== 'string') return 'Missing event type'
   if (!KNOWN_EVENT_TYPES.has(body.type)) return `Unknown event type: ${body.type}`
+  if (body.type === 'chat_status' && body.status !== null && !createChatStatus(body.status, 0, 'validate')) return 'Invalid chat status'
   if (body.signals !== undefined) {
     if (!Array.isArray(body.signals)) return 'signals must be an array'
     if (body.signals.length > MAX_SIGNALS_PER_EVENT) return `At most ${MAX_SIGNALS_PER_EVENT} signals per event`
@@ -1875,7 +1880,7 @@ app.post('/event', requireToken, (req, res) => {
     agentType:  clampString(body.agentType),
     role:       clampString(body.role),
     name:       clampString(body.name),
-    status:  clampString(body.status),
+    status:  body.type === 'chat_status' ? body.status : clampString(body.status),
     result:  clampString(body.result),
     server:  clampString(body.server),
     tool:    clampString(body.tool),
@@ -2032,6 +2037,28 @@ const PRIVILEGED_COMMANDS = new Set(['/clear'])
  * No auth required for a plain line or a read-only slash command (comes from
  * the UI, not hooks); a privileged command (/clear) needs the bearer token.
  */
+export function setChatStatus(update) {
+  const office = currentOffice()
+  clearTimeout(office.state.chatStatusTimer)
+  office.state.chatStatusTimer = null
+  const next = update === null ? null : createChatStatus(update, Date.now(), randomUUID())
+  office.state.chatStatus = next
+  broadcast({ type: 'chat_status', status: next })
+  const delay = next?.state === 'done' ? 6000 : ['received', 'routing', 'thinking'].includes(next?.state) ? 180_000 : 0
+  if (delay) {
+    office.state.chatStatusTimer = officeTimeout(() => {
+      if (office.state.chatStatus === next) setChatStatus(null)
+    }, delay)
+    office.state.chatStatusTimer.unref?.()
+  }
+}
+
+function acceptChatStatus(text) {
+  const agent = routeMessage(text)
+  setChatStatus({ state: 'received', agent })
+  setChatStatus({ state: 'thinking', agent })
+}
+
 app.post('/chat', (req, res) => {
   const { sender, text } = req.body ?? {}
   if (!sender || !text) {
@@ -2053,6 +2080,7 @@ app.post('/chat', (req, res) => {
         return unauthorized(res, { error: '/goal needs the office token' })
       }
       const row = addMessage({ sender: clampString(sender), role: 'boss', text: clampString(text, 2000), msgType: 'goal' })
+      setChatStatus({ state: 'received', agent: routeMessage(text) })
       broadcast({ type: 'chat_message', ...row })
       console.log(`[chat] ${row.sender}: ${row.text}`)
       return res.json({ ok: true })
@@ -2081,6 +2109,7 @@ app.post('/chat', (req, res) => {
   })
 
   // Broadcast to all WS clients
+  acceptChatStatus(String(text))
   broadcast({ type: 'chat_message', ...msg })
 
   // Smart notification — ping when "claude" or "@claude" is mentioned
@@ -2224,6 +2253,7 @@ function sendAgentMessage({ sender, role, text, recipient, type, replyTo, sender
   if (senderAgent) recordActivity(senderAgent.id, { kind: 'message', text: to ? `to ${to}: ${msg.text}` : msg.text })
 
   // Broadcast as a chat message — the frontend will attribute it to an agent
+  if (['received', 'routing', 'thinking'].includes(currentOffice().state.chatStatus?.state)) setChatStatus(null)
   broadcast({
     type: 'chat_message',
     ...msg,
@@ -2751,6 +2781,10 @@ app.post('/chat/cron-state', (req, res) => {
 function processEvent(body) {
   if (currentOffice() !== defaultOffice) throw new Error('Events not scoped yet')
   switch (body.type) {
+    case 'chat_status': {
+      setChatStatus(body.status)
+      return null // setChatStatus broadcasts exactly once
+    }
     case 'agent_spawned': {
       const agent = body.agent ?? {}
       const id = resolveAgentId(agent)
@@ -3629,6 +3663,7 @@ wss.on('connection', (ws, req) => {
   const pending = isDefault ? permissions.pending() : []
   const snapshot = {
     type: 'snapshot',
+    chatStatus: office.state.chatStatus,
     activeAgents: liveAgents(),
     sessions: Array.from(sessions.values()).map(s => sessionToJSON(s, { withText: trusted })),
     statuses: isDefault ? status.summary() : null, // not scoped yet

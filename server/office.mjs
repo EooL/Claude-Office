@@ -10,5 +10,5 @@ export function createOffice({ home, cwd }) {
   const state = createOfficeState()
   const chat = openChatDb(context.home)
   const auth = createOfficeAuth(join(context.home, 'auth-token'))
-  return { context, state, chat, auth, close: () => chat.close() }
+  return { context, state, chat, auth, close: () => { clearTimeout(state.chatStatusTimer); state.chatStatusTimer = null; chat.close() } }
 }

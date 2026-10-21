@@ -292,6 +292,7 @@ const App: React.FC = () => {
 
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [chatTypingUser, setChatTypingUser] = useState<string | null>(null)
+  const [chatStatus, setChatStatus] = useState<import('./chatStatus').ChatStatus | null>(null)
   const [lastSeenId, setLastSeenId] = useState<number | null>(null)
   const [muted, setMuted] = useState(false)
   const [dayPhase, setDayPhase] = useState<DayPhase>(getCurrentPhase())
@@ -662,6 +663,8 @@ const App: React.FC = () => {
   const dispatchPermissions = useCallback((action: PermissionAction) => setPermissionCards(prev => reducePermissions(prev, action)), [])
 
   const handleEvent = useCallback((action: OfficeAction) => {
+    if (action.type === 'chat_status') { setChatStatus(action.chatStatus ?? null); return }
+    if (action.type === 'snapshot') setChatStatus(action.chatStatus ?? null)
     // permission_request / _extended / _resolved are the cards' alone; the
     // snapshot also hands over the UI token and the pending list, then goes
     // on to the office reducer as before
@@ -1619,6 +1622,7 @@ const App: React.FC = () => {
         autoTypeText={autoTypeText}
         dayPhase={effectivePhase}
         typingUser={chatTypingUser}
+        chatStatus={chatStatus}
         lastSeenId={lastSeenId}
         onReaction={handleReaction}
         readOnly={readOnly}

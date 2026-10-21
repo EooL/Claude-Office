@@ -18,5 +18,7 @@ export function createOfficeState() {
     signalSeq: 0,
     videoPaused: false,
     videoPausedSince: 0,
+    chatStatus: null,
+    chatStatusTimer: null,
   }
 }

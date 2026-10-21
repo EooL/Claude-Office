@@ -14,6 +14,8 @@ import { chatReplyPrompt, guardChatReply } from '../server/delegation.mjs'
 import { readJson } from '../server/jsonfile.mjs'
 import { officeHome } from '../server/paths.mjs'
 import { join } from 'node:path'
+import { office } from './office-client.mjs'
+import { listRoles } from '../server/roles.mjs'
 
 const [name, prompt, flag] = process.argv.slice(2)
 if (!adapterNames.includes(name) || !prompt) {
@@ -37,5 +39,9 @@ if (role && !process.env.CHAT_AI_BACKEND) {
 // no answer: the watcher logs this line, so the reason (not logged in, a limit, ...) is not lost
 if (role && result.text) result.text = guardChatReply(result.text, readJson(join(officeHome(process.env.OFFICE_ID ?? 'default'), 'delegation.json'), {}))
 if (!result.text && result.error) console.error(result.error)
+if (!result.text) {
+  try { await office('/event', { type: 'chat_status', status: { state: 'failed', agent: { name: listRoles().find(r => r.role === role)?.name || 'Claude', role: role || 'assistant' }, detail: 'the chat service returned no answer; check its login or quota' } }) } catch { /* optional progress */ }
+}
 process.stdout.write(flag === '--json' ? JSON.stringify(result) : result.text)
-process.exit(result.text ? 0 : result.code || 1)
+// Let pending HTTP handles/stdout close normally (forced exit can assert in libuv on Windows).
+process.exitCode = result.text ? 0 : result.code || 1

@@ -225,11 +225,16 @@ function isBusy(state, now) {
  * Run a job as an agent: hire it, let it work, finish it. Returns the run result, or null
  * when the service gave no text (the agent reports the failure itself).
  */
+async function reportChatStatus(deps, state, name, role, detail) {
+  try { await deps.status?.(state ? { state, agent: { name, role }, ...(detail ? { detail } : {}) } : null) } catch { /* progress must never prevent the work */ }
+}
+
 async function work(deps, { name, role, task, mode, prompt, timeoutMs, status }) {
   const id = `deleg-${randomUUID()}`
   const primary = deps.agent(role)
   const job = { id, name, role, task, phase: mode, at: deps.now() }
   deps.write({ busy: { id, name, kind: mode, pid: deps.pid, at: deps.now() }, lastJob: { ...job, status: 'running' } })
+  await reportChatStatus(deps, mode === 'plan' ? 'planning' : 'working', name, role)
   await deps.hire({ id, name, role, task })
   await deps.working(id, status)
   let result
@@ -250,6 +255,7 @@ async function work(deps, { name, role, task, mode, prompt, timeoutMs, status })
   deps.write({ busy: undefined, lastJob: { ...job, status: failed ? 'failed' : mode === 'plan' ? 'planned' : 'finished', failureKind, service, finishedAt: deps.now() } })
   if (failed) {
     await deps.say(name, role, delegationStatus(deps.read(), deps.now()))
+    await reportChatStatus(deps, 'failed', name, role, FAILURE_TEXT[failureKind] ?? FAILURE_TEXT.other)
     return null
   }
   return { ...result, service }
@@ -272,6 +278,7 @@ export async function startPlan(deps, { name, role, task }) {
   const { plan, goal } = parsePlan(result.text)
   deps.write({ pending: undefined, plan: { name, role, task, plan, goal: goal || task, service: result.service, at: deps.now() } })
   await deps.say(name, role, clip(`Boss, I have a plan:\n${plan}\n\nSay /goal to send me, or /goal <changes> to adjust it.`))
+  await reportChatStatus(deps, 'awaiting_approval', name, role)
 }
 
 /** The boss said /goal: do the latest plan. */
@@ -305,6 +312,7 @@ export async function handleGoal(deps, text) {
   }
   deps.write({ plan: undefined })
   await deps.say(plan.name, plan.role, `${clip(`Execution finished. Reported result:\n${result.text}`)}\n${report}`)
+  await reportChatStatus(deps, 'done', plan.name, plan.role)
 }
 
 /**
@@ -336,13 +344,19 @@ export async function handleMessage(deps, text, startInBackground) {
     if (isNo(text)) {
       deps.write({ pending: undefined })
       await deps.say(name, role, 'Okay boss, dropped it.')
+      await reportChatStatus(deps, null)
       return 'handled'
     }
   }
 
-  if (!looksLikeTask(text)) return 'chat'
+  if (!looksLikeTask(text)) {
+    const agent = routeMessage(text)
+    await reportChatStatus(deps, 'thinking', agent.name, agent.role)
+    return 'chat'
+  }
 
   const { role, name } = routeMessage(text)
+  await reportChatStatus(deps, 'routing', name, role)
   let verdict
   try {
     // the orchestrator, not the agent the message routes to, decides whether it is a job
@@ -351,9 +365,13 @@ export async function handleMessage(deps, text, startInBackground) {
     verdict = parseClassification(classified.text)
   } catch {
     await deps.say(name, role, 'No worker started: task routing is unavailable. Check the orchestrator brain in Settings and retry the request.')
+    await reportChatStatus(deps, 'failed', name, role, 'task routing is unavailable')
     return 'handled'
   }
-  if (verdict.kind === 'chat' && verdict.confidence >= CONFIDENT) return 'chat'
+  if (verdict.kind === 'chat' && verdict.confidence >= CONFIDENT) {
+    await reportChatStatus(deps, 'thinking', name, role)
+    return 'chat'
+  }
 
   const task = String(text).slice(0, 6000)
   if (verdict.kind === 'task' && verdict.confidence >= CONFIDENT) {
@@ -363,5 +381,6 @@ export async function handleMessage(deps, text, startInBackground) {
   // Not sure it is a job: ask, and let the next yes / no decide
   deps.write({ pending: { name, role, task, at: now } })
   await deps.say(name, role, `Boss, do you want me to take that on? (${short(task, 120)}) Say yes or no.`)
+  await reportChatStatus(deps, 'awaiting_approval', name, role, 'Waiting for you to confirm this task')
   return 'handled'
 }

@@ -275,6 +275,8 @@ export interface OfficeEvent {
     | 'health' | 'connection'
     // A session's task list changed (server/tasks.js), or the snapshot's boards (src/taskBoard.ts)
     | 'task_board'
+    | 'chat_status'
+  chatStatus?: import('./chatStatus').ChatStatus | null
   agent?: Partial<Agent>
   agentId?: string
   status?: string

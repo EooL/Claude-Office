@@ -6,6 +6,19 @@ import { postSetting } from '../permissions'
 import { officeHttpBase } from '../serverUrl'
 import ChatContent from './ChatContent'
 import ChatActions, { useChatActions } from './ChatActions'
+import { isLiveStatus, statusLabel, visibleStatus, type ChatStatus } from '../chatStatus'
+
+export function ChatStatusRow({ status, now = Date.now() }: { status: ChatStatus | null; now?: number }) {
+  const shown = visibleStatus(status, now)
+  if (!shown) return null
+  const live = isLiveStatus(shown)
+  return <div className={`slack-msg slack-typing-row slack-chat-status is-${shown.state}`} role="status" aria-live="polite">
+    <div className="slack-avatar"><img src={getAvatarSrc(shown.agent.role)} alt="" className="slack-avatar-img" /></div>
+    <div className="slack-msg-content"><div className="slack-typing-label">{statusLabel(shown, now)}{live && <span className="slack-status-elapsed" aria-hidden="true"> {Math.max(0, Math.floor((now - shown.since) / 1000))}s</span>}</div>
+      {live && <div className="slack-typing-dots" aria-hidden="true"><span/><span/><span/></div>}
+    </div>
+  </div>
+}
 
 export function getAvatarSrc(role: string, agentId?: string): string {
   const charBase = ROLE_TO_CHAR[role] ?? 'employee-3'
@@ -69,13 +82,21 @@ interface SlackChatProps {
   dayPhase: string
   /** Role/name currently typing — shows animated dots below the message list */
   typingUser?: string | null
+  chatStatus?: ChatStatus | null
   /** ID of the last message seen by the assistant — renders a tiny seen avatar */
   lastSeenId?: number | null
   /** The page has no office token: the "Answer here" toggle is hidden (the server would refuse it) */
   readOnly?: boolean
 }
 
-const SlackChat: React.FC<SlackChatProps> = ({ messages, activeAgentCount, muted, volume, onToggleMute, onVolumeChange, onSendMessage, onReaction, autoTypeText, dayPhase, typingUser, lastSeenId, readOnly = false }) => {
+const SlackChat: React.FC<SlackChatProps> = ({ messages, activeAgentCount, muted, volume, onToggleMute, onVolumeChange, onSendMessage, onReaction, autoTypeText, dayPhase, typingUser, chatStatus, lastSeenId, readOnly = false }) => {
+  const [statusNow, setStatusNow] = useState(Date.now)
+  useEffect(() => {
+    setStatusNow(Date.now())
+    if (!chatStatus || (!isLiveStatus(chatStatus) && chatStatus.state !== 'done')) return
+    const timer = setInterval(() => setStatusNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [chatStatus])
   const theme = useTheme()
   const nextActions = useChatActions(readOnly, messages[messages.length - 1]?.id ?? 0)
   void theme // Why: subscribe so avatars re-render when /the-office toggles
@@ -182,7 +203,7 @@ const SlackChat: React.FC<SlackChatProps> = ({ messages, activeAgentCount, muted
     if (bodyRef.current) {
       bodyRef.current.scrollTo({ top: bodyRef.current.scrollHeight, behavior: 'smooth' })
     }
-  }, [messages, typingUser])
+  }, [messages, typingUser, chatStatus])
 
   const displayed = messages.slice(-12)
 
@@ -319,7 +340,8 @@ const SlackChat: React.FC<SlackChatProps> = ({ messages, activeAgentCount, muted
             </React.Fragment>
           )
         })}
-        {typingUser && (
+        <ChatStatusRow status={chatStatus ?? null} now={statusNow} />
+        {typingUser && !visibleStatus(chatStatus, statusNow) && (
           <div className="slack-msg slack-typing-row">
             <div className="slack-avatar" style={{ border: '2px solid #cc785c', boxShadow: '0 0 6px #cc785c40' }}>
               <img src={getAvatarSrc('assistant')} alt="typing" className="slack-avatar-img" />

@@ -50,6 +50,7 @@ const deps = {
       : runForRole(role, prompt, options, { announceExhausted: false })
   },
   say,
+  status: update => office('/event', { type: 'chat_status', status: update }),
   hire: (agent) => office('/event', { type: 'agent_spawned', agent }),
   working: (id, status) => office('/event', { type: 'agent_working', agentId: id, status }),
   finish: (id, info) => office('/event', { type: 'agent_completed', agentId: id, ...info }),
@@ -88,6 +89,7 @@ async function launchPlan(job) {
   } catch {
     deps.write({ lastJob: { ...job, phase: 'plan', status: 'failed', failureKind: 'unavailable', at: deps.now() } })
     await say(job.name, job.role, 'No worker started: the planning process could not start. Check delegation.log in the office runtime directory.')
+    await deps.status({ state: 'failed', agent: { name: job.name, role: job.role }, detail: 'the planning process could not start' })
   }
 }
 
@@ -108,6 +110,7 @@ async function runWorker(action) {
     const state = deps.read()
     deps.write({ busy: undefined, lastJob: { ...state.lastJob, status: 'failed', failureKind: 'other', finishedAt: deps.now() } })
     await say(state.lastJob?.name ?? 'Claude', state.lastJob?.role ?? 'assistant', 'The worker stopped unexpectedly. No completion is confirmed. Check delegation.log in the office runtime directory.')
+    await deps.status({ state: 'failed', agent: { name: state.lastJob?.name ?? 'Claude', role: state.lastJob?.role ?? 'assistant' }, detail: 'the worker stopped unexpectedly; check delegation.log' })
   } finally { release() }
 }
 
@@ -118,6 +121,7 @@ if (cmd === 'message') {
 } else if (cmd === 'goal') {
   try { await detach('goal-run', arg ?? '/goal') } catch {
     await say('Claude', 'assistant', 'No worker started: the execution process could not start. No changes are confirmed.')
+    await deps.status({ state: 'failed', detail: 'the execution process could not start' })
   }
   process.stdout.write('handled')
 } else if (cmd === 'plan') {

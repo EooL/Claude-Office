@@ -68,6 +68,7 @@ export interface AgentSocketResult {
 
 interface SnapshotMessage {
   type: 'snapshot'
+  chatStatus?: import('../chatStatus').ChatStatus | null
   activeAgents: SnapshotAgent[]
   sessions?: Array<SessionInfo & { agentIds?: string[]; agentCount?: number }>
   /** Payroll / electricity / memory: the server's status store (server/status.js) */
@@ -311,6 +312,7 @@ export function useAgentSocket(options: AgentSocketOptions = {}): AgentSocketRes
       // state the server's main record says.
       pushEvent({
         type: 'snapshot',
+        chatStatus: snap.chatStatus ?? null,
         activeAgents: snap.activeAgents ?? [],
         sessions: snapSessions.map(s => toSessionInfo(s.id, s)),
         // The pending permission dialogs and the UI token ride along for
@@ -323,6 +325,10 @@ export function useAgentSocket(options: AgentSocketOptions = {}): AgentSocketRes
       return
     }
 
+    if (msg.type === 'chat_status') {
+      pushEvent({ type: 'chat_status', chatStatus: (msg as unknown as { status: import('../chatStatus').ChatStatus | null }).status, timestamp: Date.now() })
+      return
+    }
     // Regular office event
     trackSession(msg as OfficeEvent)
     pushEvent(msg as OfficeEvent)

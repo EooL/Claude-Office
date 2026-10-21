@@ -1085,6 +1085,10 @@
 }
 
 /* ===== SLACK TYPING INDICATOR ===== */
+.slack-chat-status .slack-typing-label { font-size: 11px; line-height: 1.4; color: var(--meter-fg, #d4d7dc); font-style: normal; }
+.slack-chat-status.is-failed .slack-typing-label { color: var(--meter-warn, #e7ad51); }
+.slack-chat-status.is-awaiting_approval, .slack-chat-status.is-done, .slack-chat-status.is-failed { opacity: 0.9; }
+.slack-status-elapsed { font-size: 11px; opacity: 0.65; }
 .slack-typing-row {
   animation: typingRowIn 0.2s ease-out both;
   opacity: 0.9;

@@ -83,7 +83,13 @@ describe('loadRuntimeConfig', () => {
     expect(await loadRuntimeConfig({ fetchImpl: fakeFetch({ error: 'nope' }, { status: 404 }).fetchImpl, base: 'http://127.0.0.1:3334' })).toBeNull()
     expect(await loadRuntimeConfig({ fetchImpl: fakeFetch('not json').fetchImpl, base: 'http://127.0.0.1:3334' })).toBeNull()
     expect(await loadRuntimeConfig({ fetchImpl: fakeFetch({ port: 3334 }).fetchImpl, base: 'http://127.0.0.1:3334' })).toBeNull()
-    expect(await loadRuntimeConfig({ fetchImpl: undefined as never, base: 'http://127.0.0.1:3334' })).toBeNull()
+    // An undefined override uses global fetch. Stub that transport too: a developer's
+    // real office may be running, and this assertion must never contact it.
+    const defaultFetch = vi.spyOn(globalThis, 'fetch').mockImplementation(fakeFetch(null, { reject: true }).fetchImpl)
+    try {
+      expect(await loadRuntimeConfig({ fetchImpl: undefined as never, base: 'http://127.0.0.1:4123' })).toBeNull()
+      expect(defaultFetch).toHaveBeenCalledWith('http://127.0.0.1:4123/config', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    } finally { defaultFetch.mockRestore() }
     expect(config.BOSS_NAME).toBe(BUILD_TIME_BOSS.name)
     expect(AGENT_CONFIGS['boss'].title).toBe(BUILD_TIME_BOSS.name)
     expect(config.ROLE_TO_CHAR['boss']).toBe(BUILD_TIME_BOSS.sprite)

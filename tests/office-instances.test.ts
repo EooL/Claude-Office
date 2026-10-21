@@ -72,7 +72,7 @@ it('constructs two offices in one process with isolated state, statements and da
     expect(timeouts).not.toHaveBeenCalled()
     expect(listening).not.toHaveBeenCalled()
     for (const key of Object.keys(a.state)) {
-      if (typeof a.state[key] === 'object') expect(a.state[key], key).not.toBe(b.state[key])
+      if (a.state[key] !== null && typeof a.state[key] === 'object') expect(a.state[key], key).not.toBe(b.state[key])
     }
     for (const office of [a, b]) {
       office.state.activeAgents.set('same-agent', { id: 'same-agent' })

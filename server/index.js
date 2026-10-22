@@ -37,6 +37,7 @@ import { mountBackends } from './backends.js'
 import { mountBrains, refreshCatalogueSoon, startCatalogueRefresh } from './brainRoutes.js'
 import { mountArtifacts } from './artifacts.js'
 import { mountChatActions } from './chat-actions.mjs'
+import { CHAT_MESSAGE_LIMIT } from './chat-limits.mjs'
 import { readPort, readUiPort, readHost, loadOfficeConfig, bossFromConfig } from './config.js'
 import { agentTranscriptPath, readTranscript, isTranscriptPath, clampLine } from './transcript.js'
 import { defaultOfficeContext } from './office-context.mjs'
@@ -1513,10 +1514,11 @@ const rootApp = express()
 const app = express.Router()
 app.locals = rootApp.locals
 
-// JSON bodies: 10 KiB is plenty for a chat line or a tool event, but a
+// Ordinary JSON bodies stay at 10 KiB. Long chat permits worst-case JSON escaping
+// of CHAT_MESSAGE_LIMIT characters plus envelope metadata. A
 // session_prompt / session_turn_end carries up to MAX_TEXT_LEN characters of
 // text (JSON-escaped, several bytes each) plus the background-task list, so
-// /event alone takes more. Its sanitiser clamps every field it keeps.
+// /event has its own bound. Its sanitiser clamps every field it keeps.
 const JSON_LIMIT = '10kb'
 const EVENT_JSON_LIMIT = '64kb'
 // Capture the exact request bytes so a signed request (the hook) can be
@@ -1524,6 +1526,10 @@ const EVENT_JSON_LIMIT = '64kb'
 const captureRaw = (req, _res, buf) => { req.rawBody = buf }
 const jsonBody = express.json({ limit: JSON_LIMIT, verify: captureRaw })
 const eventJsonBody = express.json({ limit: EVENT_JSON_LIMIT, verify: captureRaw })
+const chatJsonBody = express.json({ limit: CHAT_MESSAGE_LIMIT * 6 + 8192, verify: captureRaw })
+function officeJsonBody(req, res, next) {
+  return (['/chat', '/chat/reply', '/a2a'].includes(req.path) ? chatJsonBody : req.path === '/event' ? eventJsonBody : jsonBody)(req, res, next)
+}
 
 // Host-header guard: the first thing every request passes, before the body
 // parsers and CORS. A non-loopback (or missing) Host is a DNS-rebinding page
@@ -1540,7 +1546,7 @@ rootApp.use((req, res, next) => {
   // parsing a body. Legacy requests retain their original parser order.
   if (req.path === '/o' || req.path.startsWith('/o/')) return next()
   // a profile file may be up to 20 KB (JSON-escaped, more)
-  return (req.path === '/event' || req.path.startsWith('/profiles') ? eventJsonBody : jsonBody)(req, res, next)
+  return (req.path.startsWith('/profiles') ? eventJsonBody : officeJsonBody)(req, res, next)
 })
 
 // CORS for local dev — only allow known localhost origins
@@ -2079,7 +2085,7 @@ app.post('/chat', (req, res) => {
         console.warn(`[chat] Refused /goal from ${clampString(sender)}: no token`)
         return unauthorized(res, { error: '/goal needs the office token' })
       }
-      const row = addMessage({ sender: clampString(sender), role: 'boss', text: clampString(text, 2000), msgType: 'goal' })
+      const row = addMessage({ sender: clampString(sender), role: 'boss', text: clampString(text, CHAT_MESSAGE_LIMIT), msgType: 'goal' })
       setChatStatus({ state: 'received', agent: routeMessage(text) })
       broadcast({ type: 'chat_message', ...row })
       console.log(`[chat] ${row.sender}: ${row.text}`)
@@ -2095,7 +2101,7 @@ app.post('/chat', (req, res) => {
     }
     const cmdResult = handleSlashCommand(cmd)
     if (cmdResult) {
-      const userMsg = addMessage({ sender: clampString(sender), text: clampString(text, 2000) })
+      const userMsg = addMessage({ sender: clampString(sender), text: clampString(text, CHAT_MESSAGE_LIMIT) })
       broadcast({ type: 'chat_message', ...userMsg })
       const sysMsg = addMessage({ sender: 'system', text: cmdResult, isSystem: true })
       broadcast({ type: 'chat_message', ...sysMsg, isSystem: true })
@@ -2105,7 +2111,7 @@ app.post('/chat', (req, res) => {
 
   const msg = addMessage({
     sender: clampString(sender),
-    text: clampString(text, 2000),
+    text: clampString(text, CHAT_MESSAGE_LIMIT),
   })
 
   // Broadcast to all WS clients
@@ -2243,7 +2249,7 @@ function sendAgentMessage({ sender, role, text, recipient, type, replyTo, sender
   const msg = addMessage({
     sender: from,
     role: clampString(role || 'default'),
-    text: clampString(body, 2000),
+    text: clampString(body, CHAT_MESSAGE_LIMIT),
     threadId: Number.isInteger(replyTo) ? replyTo : null,
     recipient: to,
     msgType,
@@ -3497,7 +3503,7 @@ function jsonErrorHandler(err, req, res, next) {
 
 rootApp.use('/o', validateOfficePath)
 rootApp.use('/o/:officeId', resolveOffice,
-  (req, res, next) => (req.path === '/event' ? eventJsonBody : jsonBody)(req, res, next),
+  officeJsonBody,
   app, (_req, res) => res.sendStatus(404))
 rootApp.use('/o', unknownOffice)
 rootApp.use(legacyOffice, app)

@@ -1,18 +1,18 @@
 import React, { useEffect, useState } from 'react'
 import { officeHttpBase } from '../serverUrl'
 import { getUiToken } from '../permissions'
-import ChatContent from './ChatContent'
+import ExpandableChatContent from './ExpandableChatContent'
 
 export interface RecommendedAction { id: string; messageId: number; kind: 'goal' | 'plan'; label: string; request: string; decision?: 'started' | 'ignored'; disabled?: boolean }
 export const isSuggestion = (action: RecommendedAction) => action.kind === 'plan' && action.id.startsWith('next:')
 
 /** Only an authenticated, actionable suggestion replaces its source line. */
-export function ActionMessage({ text, messageId, actions, readOnly = false }: { text: string; messageId: number; actions: RecommendedAction[]; readOnly?: boolean }) {
+export function ActionMessage({ text, messageId, actions, readOnly = false, onResize }: { text: string; messageId: number; actions: RecommendedAction[]; readOnly?: boolean; onResize?: () => void }) {
   const visible = readOnly ? [] : actions
   const requests = visible.filter(action => isSuggestion(action) && !action.decision && !action.disabled).map(action => action.request)
   const body = text.replace(/^(?:NEXT_ACTION|Suggested next steps?):([^\r\n]*)(?:\r?\n|$)/gim,
     (line, task: string) => requests.includes(task.trim()) ? '' : line).trim()
-  return <><ChatContent text={body} messageId={messageId} readOnly={readOnly} /><ChatActions actions={visible} /></>
+  return <><ExpandableChatContent text={body} messageId={messageId} readOnly={readOnly} onResize={onResize} /><ChatActions actions={visible} /></>
 }
 export function useChatActions(readOnly: boolean, latestMessageId: number) {
   const [actions, setActions] = useState<RecommendedAction[]>([])

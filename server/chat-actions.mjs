@@ -1,4 +1,5 @@
 import { FOLLOW_UP_INSTRUCTION, planId } from './delegation.mjs'
+import { clipDelegationChat } from './chat-limits.mjs'
 
 export { FOLLOW_UP_INSTRUCTION, planId }
 
@@ -45,7 +46,7 @@ export function mountChatActions(app, { db, requireUi, readState, enqueue, log =
     const actions = []
     if (state.plan) {
       const expected = `Boss, I have a plan:\n${state.plan.plan}\n\nSay /goal to send me, or /goal <changes> to adjust it.`
-      const shown = expected.length > 1800 ? `${expected.slice(0, 1799)}…` : expected
+      const shown = clipDelegationChat(expected)
       const row = messages.find(m => m.sender === state.plan.name && m.text === shown && m.timestamp >= state.plan.at - 1000)
       if (row) {
         // The button goes on the newest line the agent said about the plan ("... Say /goal to approve execution",

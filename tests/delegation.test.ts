@@ -34,6 +34,17 @@ function fake(answers: string[] = [], state: Record<string, any> = {}) {
 }
 
 describe('roles', () => {
+  it('keeps long plans and execution reports up to the shared 8000-character clip', async () => {
+    const { deps, log, state } = fake(['p'.repeat(9000) + '\nGOAL: inspect the code', 'r'.repeat(9000)])
+    await startPlan(deps, { name: 'Reviewer', role: 'assistant', task: 'inspect the code' })
+    const planLine = log.filter(entry => entry[0] === 'say').at(-1)[3]
+    expect(planLine).toHaveLength(8000)
+    expect(planLine.endsWith('…')).toBe(true)
+    expect(state.plan.plan).toHaveLength(9000) // execution retains the actual plan
+    await handleGoal(deps, '/goal')
+    const report = log.filter(entry => entry[0] === 'say').at(-1)[3]
+    expect(report.slice(0, 8000)).toBe('Execution finished. Reported result:\n' + 'r'.repeat(7962) + '…')
+  })
   it('routes by keyword like the old table, and falls back to the assistant', () => {
     expect(routeMessage('fix the crash')).toEqual({ role: 'debugger', name: 'Debugger' })
     expect(routeMessage('add a unit test')).toEqual({ role: 'test-engineer', name: 'Tester' })

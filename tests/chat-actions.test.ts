@@ -4,6 +4,7 @@ import request from 'supertest'
 import { describe, expect, it } from 'vitest'
 import { mountChatActions, nextAction, planId } from '../server/chat-actions.mjs'
 import { handleGoal } from '../server/delegation.mjs'
+import { clipDelegationChat } from '../server/chat-limits.mjs'
 
 function fixture(existingDb?: Database.Database) {
   const db = existingDb ?? new Database(':memory:')
@@ -23,6 +24,13 @@ function fixture(existingDb?: Database.Database) {
 }
 
 describe('scoped next-step approvals', () => {
+  it('finds execution approval on the newly clipped long plan', async () => {
+    const f = fixture()
+    f.state.plan = { name: 'Reviewer', role: 'assistant', plan: 'p'.repeat(9000), goal: 'inspect the code', at: 1000 }
+    f.insert(clipDelegationChat(`Boss, I have a plan:\n${f.state.plan.plan}\n\nSay /goal to send me, or /goal <changes> to adjust it.`))
+    expect((await f.get()).body.actions[0]).toMatchObject({ kind: 'goal', label: 'Approve and execute plan' })
+    f.db.close()
+  })
   it('requires authentication and derives a proposal from an agent message, never a client command', async () => {
     const f = fixture()
     f.insert('NEXT_ACTION: delete everything', 'default', 'Boss')

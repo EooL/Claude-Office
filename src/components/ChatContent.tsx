@@ -7,7 +7,7 @@ import '../styles/chat-content.css'
 import { displayChatText } from '../chatStatus'
 
 interface FileLink { target: string; label: string }
-interface Props { text: string; messageId: number; readOnly?: boolean; basePath?: string; onOpen?: (file: FileLink) => void }
+interface Props { text: string; messageId: number; readOnly?: boolean; basePath?: string; onOpen?: (file: FileLink) => void; previewCharacters?: number }
 const resolveTarget = (target: string, base?: string) => base && targetKind(target) === 'local' && !/^(?:[a-z]:[\\/]|\/)/i.test(target)
   ? `${base.replace(/\\/g, '/').replace(/[^/]*$/, '')}${target}` : target
 
@@ -86,12 +86,19 @@ function FilePreview({ file, messageId, close, navigate }: { file: FileLink; mes
   </div>, document.body)
 }
 
-export default function ChatContent({ text, messageId, readOnly = false, basePath, onOpen }: Props) {
+export default function ChatContent({ text, messageId, readOnly = false, basePath, onOpen, previewCharacters }: Props) {
   const [selected, setSelected] = useState<FileLink | null>(null)
   const trigger = useRef<HTMLElement | null>(null)
   const open = onOpen ?? ((file: FileLink) => { trigger.current = document.activeElement as HTMLElement; setSelected(file) })
+  let remaining = previewCharacters ?? Infinity
+  const tokens = chatTokens(displayChatText(text)).flatMap(token => {
+    if (remaining <= 0) return []
+    const label = token.label.slice(0, remaining)
+    remaining -= token.label.length
+    return [{ ...token, label }]
+  })
   return <>
-    <span className="chat-rich-text">{chatTokens(displayChatText(text)).map((token, index) => {
+    <span className="chat-rich-text">{tokens.map((token, index) => {
       if (token.kind === 'text') return <React.Fragment key={index}>{token.label}</React.Fragment>
       if (token.kind === 'code') return <code key={index}>{token.label}</code>
       const target = resolveTarget(token.target ?? '', basePath)

@@ -10,7 +10,7 @@ This is the registration research snapshot, not a runtime guarantee. "Verified" 
 
 | Item | Detail |
 |---|---|
-| Config file | User `~/.codex/config.toml`; project `.codex/config.toml` (trusted projects only). The local file has `[mcp_servers.ai-memory]` with keys `url`, `default_tools_approval_mode`, `bearer_token_env_var`, confirming the table name and the approval key. |
+| Config file | User `~/.codex/config.toml`; project `.codex/config.toml` (trusted projects only). A local file with an existing `[mcp_servers.<name>]` table has the keys `url`, `default_tools_approval_mode`, `bearer_token_env_var`, confirming the table name and the approval key. |
 | Snippet | `[mcp_servers.claude-office-tools]`, `command = "node"`, `args = ["D:/path/office-tools-mcp.mjs", "--root", "D:/project"]`, `startup_timeout_sec = 20`, `default_tools_approval_mode = "approve"` |
 | Other keys | `env`, `env_vars`, `cwd`, `tool_timeout_sec` (default 60), `enabled`, `required`, `enabled_tools`, `disabled_tools`, `tools.<tool>.approval_mode` |
 | Narrow permission | Per server `default_tools_approval_mode = "approve"` (values: auto, prompt, writes, approve), or per tool `[mcp_servers.<name>.tools.<tool>]` with `approval_mode = "approve"`. Both are per server. |

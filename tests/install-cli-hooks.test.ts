@@ -52,7 +52,7 @@ describe('explicit CLI hook installer', () => {
   })
   for (const cli of CLIS) it(`${cli}: create, idempotence, backup, uninstall and owner preservation`, () => {
     const dir = home(), file = configPath(cli, dir)
-    const owner = cli === 'agy' ? { 'ai-memory': { Stop: [{ command: 'owner-command' }] } } : { model: 'owner-model', hooks: { Stop: [{ hooks: [{ type: 'command', command: 'owner-command' }] }] } }
+    const owner = cli === 'agy' ? { 'other-tool': { Stop: [{ command: 'owner-command' }] } } : { model: 'owner-model', hooks: { Stop: [{ hooks: [{ type: 'command', command: 'owner-command' }] }] } }
     if (cli !== 'opencode') put(file, owner)
     const original = existsSync(file) ? readFileSync(file, 'utf8') : null
     const toml = join(dir, '.codex', 'config.toml'); mkdirSync(dirname(toml), { recursive: true }); writeFileSync(toml, 'notify = ["owner.exe", "turn-ended"]\r\n')

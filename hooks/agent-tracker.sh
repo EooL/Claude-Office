@@ -80,6 +80,9 @@
 #   { "type": "command", "command": "/path/to/agent-tracker.sh" }
 # =============================================================================
 
+# Git Bash's pipe-backed large heredocs can block before their reader starts.
+if [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* ]]; then BASH_COMPAT=5.0; fi
+
 # Where the office listens: AGENT_OFFICE_EVENT_URL wins, else the port from
 # AGENT_OFFICE_PORT (the same knob the office scripts take), default 3334.
 # The default host is 127.0.0.1, not 'localhost': 'localhost' can resolve to
@@ -111,7 +114,7 @@ fi
 # single-argument limit and would fail the exec with E2BIG. No shell
 # variables are interpolated into the Python source.
 PY=$(cat <<'PYEOF'
-import json, sys, os, re, hashlib
+import json, sys, os, re, hashlib, posixpath
 
 try:
     d = json.loads(sys.stdin.read() or '{}')
@@ -823,7 +826,9 @@ def name_of(value):
     # A directory, package, release or image as a display name: its last
     # path segment, without an image tag ("ghcr.io/me/api:1.2" -> "api");
     # a config file stands for its directory (packages/api/tsconfig.json -> api)
-    parts = str(value or '').strip().rstrip('/').split('/')
+    value = str(value or '')
+    if os.name == 'nt': value = value.replace('\\', '/')
+    parts = value.strip().rstrip('/').split('/')
     if parts[-1].endswith(('.json', '.yaml', '.yml', '.toml')):
         parts = parts[:-1] or ['']
     last = parts[-1].split('@')[0].split(':')[0]
@@ -1109,7 +1114,7 @@ def classify_segments(command, cwd=None, stats=None):
             continue
         prog, args = tokens[0].rsplit('/', 1)[-1], tokens[1:]
         if prog in ('cd', 'pushd') and args and args[0] != '-':
-            here = os.path.normpath(os.path.join(here or '', os.path.expanduser(args[0])))
+            here = posixpath.normpath(posixpath.join(here or '', os.path.expanduser(args[0])))
             continue
         if not masked:
             gates += 1
@@ -1119,7 +1124,7 @@ def classify_segments(command, cwd=None, stats=None):
             sub = positionals(args, ('-C', '-c', '--git-dir', '--work-tree', '--namespace'))
             if sub[:1] == ['push']:
                 gdir = flag_value(args, ('-C',))
-                where = os.path.normpath(os.path.join(here or '', gdir)) if gdir else here
+                where = posixpath.normpath(posixpath.join(here or '', gdir)) if gdir else here
                 for entry in git_push(args[args.index('push') + 1:]):
                     out.append(dict(entry, masked=masked, dir=where, seg=seg))
             continue
@@ -1487,7 +1492,18 @@ PYEOF
 # this one process — the common path spends no extra process on signing.
 # Line 1 is the event, line 2 its POST signature ("ts<US>sig", or empty), and
 # line 3 is `wait` for a PermissionRequest the office may answer.
-PY_OUT=$(printf '%s' "$PAYLOAD" | OFFICE_TOKEN="$TOKEN" OFFICE_POST_URL="$SERVER_URL" python3 -I -c "$PY")
+# Native Windows limits command lines to 32 KB; the parser source is larger.
+run_parser() {
+    if [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* ]]; then
+        parser_source=$(mktemp) || return 1
+        trap 'rm -f "$parser_source"' EXIT
+        printf '%s\n' 'import sys; sys.stdin.reconfigure(encoding="utf-8"); sys.stdout.reconfigure(newline="\n")' "$PY" > "$parser_source"
+        python3 -I "$(cygpath -w "$parser_source")"
+    else
+        python3 -I -c "$PY"
+    fi
+}
+PY_OUT=$(printf '%s' "$PAYLOAD" | OFFICE_TOKEN="$TOKEN" OFFICE_POST_URL="$SERVER_URL" run_parser)
 EVENT_JSON=$(printf '%s\n' "$PY_OUT" | sed -n 1p)
 POST_SIG_LINE=$(printf '%s\n' "$PY_OUT" | sed -n 2p)
 WAIT_FLAG=$(printf '%s\n' "$PY_OUT" | sed -n 3p)
@@ -1514,6 +1530,7 @@ EOF
 # out unsigned (the server answers 401, which the caller ignores).
 PY_SIGN=$(cat <<'PYSIGN'
 import os, sys, time, hashlib
+if os.name == 'nt': sys.stdout.reconfigure(newline='\n')
 token = os.environ.get('OFFICE_TOKEN', '')
 if not token:
     sys.exit(0)
@@ -1565,6 +1582,7 @@ EOF
 # the environment, never argv; the permission id is a public argument.
 PY_REPLY=$(cat <<'PYREPLY'
 import json, os, sys, time, hmac, hashlib
+if os.name == 'nt': sys.stdout.reconfigure(newline='\n')
 try:
     r = json.loads(sys.stdin.read() or '{}')
 except Exception:
@@ -1624,7 +1642,8 @@ answer_from_office() {
     local reply id poll_ms deadline wait_s status late hook_output polls=0
     local nonce suggestions ts sig
     IFS=$'\x1f' read -r nonce suggestions < <(printf '%s' "$EVENT_JSON" | python3 -I -c '
-import json, sys
+import json, sys, os
+if os.name == "nt": sys.stdout.reconfigure(newline="\n")
 try:
     d = json.loads(sys.stdin.read() or "{}")
 except Exception:

@@ -13,7 +13,7 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createHash, createHmac } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, describe, expect, it } from 'vitest'
 
@@ -27,6 +27,10 @@ if (!PYTHON.includes('hook_event_name')) throw new Error('could not extract the 
 // empty dir so a marker in the developer's real ~/.agent-office never changes
 // what the tests below see. The answer-from-the-office group sets its own.
 const NO_MARKER_HOME = mkdtempSync(join(tmpdir(), 'agent-office-hook-home-'))
+// Keep the parser source off Windows' limited command line.
+const PYTHON_FILE = join(NO_MARKER_HOME, 'tracker.py')
+if (process.platform === 'win32') writeFileSync(PYTHON_FILE, 'import sys; sys.stdin.reconfigure(encoding="utf-8"); sys.stdout.reconfigure(newline="\\n")\n' + PYTHON)
+const PYTHON_ARGS = process.platform === 'win32' ? ['-I', PYTHON_FILE] : ['-I', '-c', PYTHON]
 afterAll(() => rmSync(NO_MARKER_HOME, { recursive: true, force: true }))
 
 /**
@@ -38,7 +42,7 @@ afterAll(() => rmSync(NO_MARKER_HOME, { recursive: true, force: true }))
  * (sed -n), so the empty line there is harmless.
  */
 function runHookLines(payload: unknown, env: Record<string, string> = {}): string[] {
-  const out = execFileSync('python3', ['-I', '-c', PYTHON], {
+  const out = execFileSync('python3', PYTHON_ARGS, {
     input: typeof payload === 'string' ? payload : JSON.stringify(payload),
     encoding: 'utf8',
     env: { ...process.env, AGENT_OFFICE_HOME: NO_MARKER_HOME, ...env },
@@ -1006,6 +1010,11 @@ describe('agent-tracker.sh: the bash wrapper', () => {
   mkdirSync(officeHome)
   writeFileSync(join(bin, 'curl'), `#!/usr/bin/env bash\npython3 -c 'import json,sys; print(json.dumps({"argv": sys.argv[1:], "stdin": sys.stdin.read()}))' "$@" >> "$FAKE_CURL_LOG"\n`)
   chmodSync(join(bin, 'curl'), 0o755)
+  const bashInit = join(dir, 'bash-env.sh')
+  if (process.platform === 'win32') {
+    const shellBin = execFileSync('cygpath', ['-u', bin], { encoding: 'utf8' }).trim()
+    writeFileSync(bashInit, `export PATH="${shellBin}:$PATH"\n`)
+  }
   afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
   const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
@@ -1014,6 +1023,8 @@ describe('agent-tracker.sh: the bash wrapper', () => {
   async function runScript(payload: unknown, extraEnv: Record<string, string> = {}) {
     rmSync(log, { force: true })
     const env: Record<string, string | undefined> = { ...process.env, PATH: `${bin}:${process.env.PATH}`, AGENT_OFFICE_HOME: officeHome, FAKE_CURL_LOG: log }
+    // Set the fake curl first after Git Bash imports the native Windows PATH.
+    if (process.platform === 'win32') env.BASH_ENV = execFileSync('cygpath', ['-u', bashInit], { encoding: 'utf8' }).trim()
     // The caller's own office settings must not leak into the script under test
     delete env.AGENT_OFFICE_EVENT_URL
     delete env.AGENT_OFFICE_PORT
@@ -1731,7 +1742,7 @@ describe('agent-tracker.sh: signals', () => {
       expect(pre(wt)).toEqual([{ kind: 'push', target: 'wt', branch: 'feature/signals', toDefault: false, command: 'git push' }])
       // Detached HEAD: a push, nothing said about the branch
       writeFileSync(join(repo, '.git', 'HEAD'), '4f449fe0c1a1d1d6c3d13d5b9e1c0e7a7c1ab0f2\n')
-      expect(pre(repo)).toEqual([{ kind: 'push', target: repo.split('/').pop(), command: 'git push' }])
+      expect(pre(repo)).toEqual([{ kind: 'push', target: basename(repo), command: 'git push' }])
     } finally {
       rmSync(repo, { recursive: true, force: true })
     }

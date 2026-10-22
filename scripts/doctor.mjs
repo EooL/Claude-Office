@@ -137,11 +137,14 @@ function samePath(a, b) {
 export function which(name, path = process.env.PATH ?? '') {
   for (const dir of path.split(delimiter)) {
     if (!dir) continue
-    const candidate = join(dir, name)
-    try {
-      accessSync(candidate, constants.X_OK)
-      if (statSync(candidate).isFile()) return candidate
-    } catch {}
+    const suffixes = process.platform === 'win32' ? ['', ...(process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';')] : ['']
+    for (const suffix of suffixes) {
+      const candidate = join(dir, name + suffix)
+      try {
+        accessSync(candidate, constants.X_OK)
+        if (statSync(candidate).isFile()) return candidate
+      } catch {}
+    }
   }
   return null
 }
@@ -405,10 +408,10 @@ export function checkToken({ officeHome, serverUp }) {
   } catch (err) {
     return result(FAIL, `token: ${file} cannot be read (${err instanceof Error ? err.message : err})`)
   }
-  if (mode & 0o077) {
+  if (process.platform !== 'win32' && (mode & 0o077)) {
     return result(FAIL, `token: ${file} is mode 0${mode.toString(8)} — anyone on this machine can post as an agent`, `chmod 600 "${file}" (the server also rewrites it 0600 when it starts)`)
   }
-  return result(PASS, `token: ${file} (0600)`)
+  return result(PASS, `token: ${file} (${process.platform === 'win32' ? 'Windows permissions' : '0600'})`)
 }
 
 export function checkDist({ root, port = DEFAULT_PORT }) {

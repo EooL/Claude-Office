@@ -20,7 +20,7 @@
 import express from 'express'
 import { createServer } from 'http'
 import { WebSocketServer, WebSocket } from 'ws'
-import { readFileSync, existsSync, writeFileSync, mkdirSync, realpathSync, chmodSync, unlinkSync, openSync, fstatSync, closeSync, constants as fsConstants } from 'fs'
+import { readFileSync, existsSync, writeFileSync, mkdirSync, realpathSync, chmodSync, unlinkSync, openSync, fstatSync, lstatSync, closeSync, constants as fsConstants } from 'fs'
 import { homedir } from 'os'
 import { join, basename } from 'path'
 import { randomBytes, timingSafeEqual, createHmac } from 'crypto'
@@ -134,6 +134,11 @@ function readTokenFile(file = TOKEN_FILE) {
   try {
     fd = openSync(file, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0))
     const st = fstatSync(fd)
+    // Windows has no O_NOFOLLOW: verify the path still names this regular file.
+    if (process.platform === 'win32') {
+      const entry = lstatSync(file)
+      if (entry.isSymbolicLink() || entry.ino !== st.ino || entry.dev !== st.dev) return null
+    }
     if (!st.isFile()) return null
     if (typeof process.getuid === 'function' && st.uid !== process.getuid()) return null
     if (process.platform !== 'win32' && (st.mode & 0o077) !== 0) return null

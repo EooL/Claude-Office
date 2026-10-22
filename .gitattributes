@@ -1,0 +1,11 @@
+*.sh text eol=lf
+*.py text eol=lf
+hooks/*.sh text eol=lf
+# Shell fixture templates and command frontmatter are compared byte for byte.
+tests/*.ts text eol=lf
+commands/*.md text eol=lf
+
+# Executable Node modules and byte-compared workflow sources.
+*.mjs text eol=lf
+*.cjs text eol=lf
+.github/workflows/*.yml text eol=lf

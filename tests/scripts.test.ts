@@ -7,7 +7,7 @@
  * bound to an ephemeral port (AGENT_OFFICE_PORT).
  */
 
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -88,6 +88,14 @@ class Proc {
   get pid() { return this.child.pid! }
   /** SIGTERM the whole process group (the script and its curl/sleep children). */
   async stop() {
+    if (process.platform === 'win32') {
+      // Terminating only Git Bash's wrapper leaves its MSYS children polling forever.
+      if (this.child.exitCode === null && this.child.signalCode === null) {
+        spawnSync('taskkill', ['/PID', String(this.pid), '/T', '/F'], { stdio: 'ignore' })
+      }
+      await Promise.race([this.exited, sleep(3000)])
+      return
+    }
     try { process.kill(-this.pid, 'SIGTERM') } catch {}
     try { this.child.kill('SIGTERM') } catch {}
     await Promise.race([this.exited, sleep(3000)])
@@ -148,7 +156,7 @@ async function startWatcher(opts: { maxPerMinute?: number; staleLock?: boolean; 
     CHAT_AI_POLL_INTERVAL: '0.2',
     CHAT_AI_MAX_REPLIES_PER_MIN: String(opts.maxPerMinute ?? 50),
   })
-  await waitFor('watcher pid file', () => existsSync(join(office.dir, 'chat-watcher.pid')))
+  await waitFor('watcher startup', () => watcher.out.includes('[chat-ai] Started (pid '))
   return { office, port, claudeDir, watcher }
 }
 
@@ -186,8 +194,8 @@ describe('chat-ai-watcher.sh', () => {
     const reply = await waitFor('the Debugger reply', async () => (await chat(w)).find(m => m.sender === 'Debugger'))
     expect(reply).toMatchObject({ role: 'debugger', text: FAKE_REPLY, recipient: null })
 
-    // Several more polls: the reply itself must not be answered
-    await sleep(1000)
+    // Observe the next poll consuming our reply before checking it was not answered.
+    await waitFor('the reply watermark', () => Number(readFileSync(join(w.office.dir, 'chat-ai-last-ts'), 'utf8')) >= reply!.timestamp)
     expect(claudeCalls(w)).toHaveLength(1)
     expect(replies(await chat(w))).toHaveLength(1)
 
@@ -281,7 +289,7 @@ describe('chat-ai-watcher.sh lock', () => {
 
     writeFileSync(join(w.claudeDir, 'mode'), 'empty')
     await say(w, 'there is a bug in checkout')
-    await waitFor('the empty-reply log line', () => w.watcher.out.includes('Empty reply from claude'))
+    await waitFor('the empty-reply diagnostics', () => w.watcher.out.includes('Empty reply from claude') && w.watcher.out.includes('claude: Not logged in'))
     expect(claudeCalls(w)).toHaveLength(1)
     expect(w.watcher.out).toContain('claude: Not logged in')
     // The watcher prints the empty-reply line inside do_reply and removes the
@@ -348,7 +356,8 @@ describe('chat-ai-watcher.sh: a chat-ai-last-ts that is not a timestamp', () => 
 })
 
 describe('chat-ai-watcher.sh stopped mid-reply', () => {
-  it('stop-office.sh takes the in-flight `claude -p` down with the watcher (GNU timeout keeps it in the group)', async () => {
+  // Git Bash PIDs and process groups are not native Windows PIDs.
+  it.skipIf(process.platform === 'win32')('stop-office.sh takes the in-flight `claude -p` down with the watcher (GNU timeout keeps it in the group)', async () => {
     const w = await startWatcher({ delay: 30 })
     try {
       await say(w, 'there is a bug in checkout')
@@ -393,7 +402,8 @@ function runStop(officeDir: string, extra: NodeJS.ProcessEnv = {}, args: string[
 }
 
 describe('stop-office.sh', () => {
-  it('stops only the processes named in the pid files and leaves clients and look-alikes alone', async () => {
+  // Git Bash cannot signal native Windows process groups by their PIDs.
+  it.skipIf(process.platform === 'win32')('stops only the processes named in the pid files and leaves clients and look-alikes alone', async () => {
     const dir = tempDir('agent-office-stop-')
     const server = idleNode()
     const vite = idleNode()
@@ -422,7 +432,8 @@ describe('stop-office.sh', () => {
     for (const f of ['server.pid', 'vite.pid', 'chat-watcher.pid']) expect(existsSync(join(dir, f))).toBe(false)
   })
 
-  it('refuses a pid file that points at a process which is not an office process', async () => {
+  // Git Bash and Node report different PIDs for MSYS processes.
+  it.skipIf(process.platform === 'win32')('refuses a pid file that points at a process which is not an office process', async () => {
     const dir = tempDir('agent-office-stop-')
     const stranger = run('sleep', ['300'], process.env)
     writeFileSync(join(dir, 'server.pid'), String(stranger.pid))
@@ -569,7 +580,8 @@ describe('chat-post.py', () => {
 // ---------------------------------------------------------------------------
 
 describe('start-office.sh', () => {
-  it('runs on a Linux box without `open`, reports the URL instead, and tears the watcher down on Ctrl+C', async () => {
+  // Windows child.kill('SIGINT') terminates instead of running the POSIX trap.
+  it.skipIf(process.platform === 'win32')('runs on a Linux box without `open`, reports the URL instead, and tears the watcher down on Ctrl+C', async () => {
     const home = tempDir('agent-office-start-')
     const officeDir = join(home, 'office')
     const bin = join(home, 'bin')
@@ -613,7 +625,8 @@ describe('start-office.sh', () => {
     expect(existsSync(pidFile)).toBe(false)
   })
 
-  it('opens the office with its token through a redirect page (never the tokened link on a command line)', async () => {
+  // This flow ends by asserting a POSIX SIGINT trap and exit status.
+  it.skipIf(process.platform === 'win32')('opens the office with its token through a redirect page (never the tokened link on a command line)', async () => {
     const home = tempDir('agent-office-start-token-')
     const officeDir = join(home, 'office')
     const bin = join(home, 'bin')

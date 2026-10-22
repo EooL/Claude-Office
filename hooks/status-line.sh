@@ -74,6 +74,7 @@ fi
 # and the server answers 401, which the backgrounded call ignores).
 PY_SIGN='
 import os, sys, time, hashlib
+if os.name == "nt": sys.stdout.reconfigure(newline="\n")
 token = os.environ.get("OFFICE_TOKEN", "")
 if not token:
     sys.exit(0)
@@ -109,7 +110,7 @@ OUT=$(STATUS_PAYLOAD="$PAYLOAD" STATUS_MODE="$MODE" python3 -I - <<'PYEOF'
 import json, os, sys
 
 try:
-    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace', newline='\n')
 except Exception:
     pass
 

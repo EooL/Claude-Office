@@ -42,8 +42,8 @@ function fakeOpener(bin: string, name: string, exitCode: number, log: string) {
 describe('electron/helpers.cjs: the office link', () => {
   it('runtimeDirFromEnv follows AGENT_OFFICE_HOME like the server', () => {
     expect(h.runtimeDirFromEnv({ AGENT_OFFICE_HOME: '/tmp/x' }, '/home/me')).toBe('/tmp/x')
-    expect(h.runtimeDirFromEnv({}, '/home/me')).toBe('/home/me/.agent-office')
-    expect(h.runtimeDirFromEnv({ AGENT_OFFICE_HOME: '' }, '/home/me')).toBe('/home/me/.agent-office')
+    expect(h.runtimeDirFromEnv({}, '/home/me')).toBe(join('/home/me', '.agent-office'))
+    expect(h.runtimeDirFromEnv({ AGENT_OFFICE_HOME: '' }, '/home/me')).toBe(join('/home/me', '.agent-office'))
   })
 
   it('readOfficeToken: a well-formed token (trailing newline allowed), else null', () => {
@@ -87,7 +87,8 @@ describe('electron/helpers.cjs: the office link', () => {
     symlinkSync(other, file)
     h.writeRedirectPage(file, h.officeLink('http://127.0.0.1:3334', TOKEN))
     expect(lstatSync(file).isSymbolicLink()).toBe(false)
-    expect(statSync(file).mode & 0o777).toBe(0o600)
+    // Windows does not implement POSIX permission bits.
+    if (process.platform !== 'win32') expect(statSync(file).mode & 0o777).toBe(0o600)
     expect(readFileSync(file, 'utf8')).toContain(TOKEN)
     expect(readFileSync(other, 'utf8')).toBe('untouched')
   })
@@ -169,7 +170,8 @@ describe('npm run open (scripts/open-office.mjs)', () => {
     expect(out.text).toBe(`Agent Office: http://127.0.0.1:3998/#token=${office.server.AUTH_TOKEN}\n`)
   })
 
-  it('opens a 0600 redirect page in the runtime dir, so the token is never on the opener\'s command line', async () => {
+  // Windows cannot execute the POSIX shebang opener fixture directly.
+  it.skipIf(process.platform === 'win32')('opens a 0600 redirect page in the runtime dir, so the token is never on the opener\'s command line', async () => {
     const bin = tempDir('agent-office-bin-')
     const log = join(bin, 'opened.log')
     fakeOpener(bin, 'xdg-open', 0, log)
@@ -180,7 +182,8 @@ describe('npm run open (scripts/open-office.mjs)', () => {
     const page = join(home, REDIRECT_FILE_NAME)
     expect(args).toEqual([`file://${page}`])
     expect(args.join(' ')).not.toContain(office.server.AUTH_TOKEN)
-    expect(statSync(page).mode & 0o777).toBe(0o600)
+    // Windows does not implement POSIX permission bits.
+    if (process.platform !== 'win32') expect(statSync(page).mode & 0o777).toBe(0o600)
     expect(readFileSync(page, 'utf8')).toContain(`http://127.0.0.1:${port}/#token=${office.server.AUTH_TOKEN}`)
     expect(out.text).toContain('Opened it in your browser')
     expect(fileURLToPath(`file://${page}`)).toBe(page)
@@ -248,7 +251,13 @@ describe('npm run rotate-token (scripts/rotate-token.mjs)', () => {
     expect(existsSync(file)).toBe(false)
     expect(out.text).toContain('the next start writes a new office token')
     const next = await loadOffice({ dir: home })
-    expect(next.server.AUTH_TOKEN).not.toBe(TOKEN)
-    expect(next.server.REUSED_TOKEN).toBeNull()
+    try {
+      expect(next.server.AUTH_TOKEN).not.toBe(TOKEN)
+      expect(next.server.REUSED_TOKEN).toBeNull()
+    } finally {
+      // Windows cannot remove the fixture directory while SQLite holds it open.
+      const { default: db } = await import('../server/chat-db.js')
+      db.close()
+    }
   })
 })

@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 
 const INSTALLER = fileURLToPath(new URL('../hooks/install-hooks.sh', import.meta.url))
-const TRACKER_SCRIPT = fileURLToPath(new URL('../hooks/agent-tracker.sh', import.meta.url))
+const TRACKER_SCRIPT = fileURLToPath(new URL('../hooks/agent-tracker.sh', import.meta.url)).replaceAll('\\', '/')
 /** Every event the installer registers: workers, sessions, and the main thread's turn (prompt, reply, needs-you, errors, compaction). */
 const EVENTS = [
   'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'SubagentStart', 'SubagentStop',
@@ -36,9 +36,15 @@ const OUR_GROUP = { matcher: '', hooks: [{ type: 'command', command: expect.stri
 /** A tracker hook as a user might have written it by hand for a checkout that is gone */
 const stale = (path = '/old/moved/path') => ({ type: 'command', command: `bash "${path}/hooks/agent-tracker.sh"` })
 
+// Match the paths Git Bash prints, including its Windows /tmp mount.
+const shellPath = (path: string) => process.platform === 'win32'
+  ? execFileSync('cygpath', ['-u', path], { encoding: 'utf8' }).trim() : path
+
 const homes: string[] = []
-afterEach(() => {
+afterEach(async () => {
   while (homes.length) rmSync(homes.pop()!, { recursive: true, force: true })
+  // Windows synchronous installers can starve Vitest's worker RPC for a whole file.
+  if (process.platform === 'win32') await new Promise<void>(resolve => setImmediate(resolve))
 })
 
 function freshHome() {
@@ -50,7 +56,7 @@ function freshHome() {
 /** The installer's environment: temp HOME and AGENT_OFFICE_HOME, never the caller's CLAUDE_CONFIG_DIR */
 function installerEnv(home: string, extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   const { CLAUDE_CONFIG_DIR: _ignored, ...env } = process.env
-  return { ...env, HOME: home, AGENT_OFFICE_HOME: join(home, '.agent-office'), ...extra }
+  return { ...env, HOME: shellPath(home), AGENT_OFFICE_HOME: shellPath(join(home, '.agent-office')), ...extra, ...(extra.CLAUDE_CONFIG_DIR ? { CLAUDE_CONFIG_DIR: shellPath(extra.CLAUDE_CONFIG_DIR) } : {}) }
 }
 
 function runInstaller(home: string) {
@@ -369,7 +375,7 @@ describe('install-hooks.sh: status line (payroll / electricity / memory)', () =>
   it('recognises the office status line by path, not by spelling: an unquoted command for this checkout is left alone', () => {
     const home = freshHome()
     mkdirSync(join(home, '.claude'), { recursive: true })
-    const statusScript = INSTALLER.replace(/install-hooks\.sh$/, 'status-line.sh')
+    const statusScript = INSTALLER.replace(/install-hooks\.sh$/, 'status-line.sh').replaceAll('\\', '/')
     writeFileSync(settingsPath(home), JSON.stringify({ statusLine: { type: 'command', command: `bash ${statusScript}`, padding: 0 } }))
 
     const out = runWith(home)
@@ -603,7 +609,7 @@ describe('install-hooks.sh: a settings file that is not valid JSON is refused, n
 
     const res = runRaw(home, args)
     expect(res.status).toBe(1)
-    expect(res.stderr).toContain(`${settingsPath(home)} is not valid JSON (line 1, column `)
+    expect(res.stderr).toContain(`${shellPath(settingsPath(home))} is not valid JSON (line 1, column `)
     expect(res.stderr).toContain('Nothing was changed')
     expect(res.out).not.toMatch(/Traceback|Installation complete|Uninstall complete/)
     expect(readFileSync(settingsPath(home), 'utf8')).toBe(BROKEN)
@@ -756,7 +762,7 @@ describe('install-hooks.sh: CLAUDE_CONFIG_DIR', () => {
 
     const installed = runRaw(home, [], env)
     expect(installed.status).toBe(0)
-    expect(installed.out).toContain(join(config, 'settings.json'))
+    expect(installed.out).toContain(shellPath(join(config, 'settings.json')))
     const settings = JSON.parse(readFileSync(join(config, 'settings.json'), 'utf8'))
     for (const event of EVENTS) expect(trackerGroups(settings, event)).toEqual([OUR_GROUP])
     expect(settings.statusLine).toBeDefined()
@@ -766,7 +772,7 @@ describe('install-hooks.sh: CLAUDE_CONFIG_DIR', () => {
 
     const removed = runRaw(home, ['--uninstall'], env)
     expect(removed.status).toBe(0)
-    expect(removed.out).toContain(`Removing the office hooks and status line from ${join(config, 'settings.json')}`)
+    expect(removed.out).toContain(`Removing the office hooks and status line from ${shellPath(join(config, 'settings.json'))}`)
     expect(readFileSync(join(config, 'settings.json'), 'utf8')).toBe('{}\n')
     expect(existsSync(join(home, '.claude'))).toBe(false)
   })
@@ -786,6 +792,12 @@ describe('install-hooks.sh: backups', () => {
     mkdirSync(bin, { recursive: true })
     writeFileSync(join(bin, 'date'), '#!/bin/sh\necho 20261015_120000\n')
     chmodSync(join(bin, 'date'), 0o755)
+    // Git Bash prepends its system bin when importing a Windows PATH.
+    if (process.platform === 'win32') {
+      const init = join(home, 'clock-env.sh')
+      writeFileSync(init, `export PATH="${shellPath(bin)}:$PATH"\n`)
+      return { BASH_ENV: shellPath(init) }
+    }
     return { PATH: `${bin}:${process.env.PATH}` }
   }
   const dir = (home: string) => join(home, '.claude')

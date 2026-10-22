@@ -87,6 +87,8 @@ fi
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 SETTINGS_FILE="$CLAUDE_DIR/settings.json"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Native Windows Python must receive the same path spelling stored in hook commands.
+if command -v cygpath >/dev/null 2>&1; then SCRIPT_DIR="$(cygpath -m "$SCRIPT_DIR")"; fi
 TRACKER_SCRIPT="$SCRIPT_DIR/agent-tracker.sh"
 HOOK_COMMAND="bash \"$TRACKER_SCRIPT\""
 STATUS_SCRIPT="$SCRIPT_DIR/status-line.sh"
@@ -298,7 +300,7 @@ except FileExistsError:
     print(f'  [error] {backup_path} already exists; run this again', file=sys.stderr)
     sys.exit(REFUSED)
 print(f'  [ok] backup saved: {backup_path}')
-with open(settings_path, 'w') as f:
+with open(settings_path, 'w', newline='') as f:
     f.write(output)
 PYEOF
 
@@ -518,7 +520,7 @@ if plugin:
     print('         Keep one: npm run uninstall-hooks -- --no-status-line takes these back out (the status line stays),')
     print(f'         or claude plugin uninstall {plugin}. Next to the plugin, npm run install-status-line adds the meters alone.')
 
-with open(settings_path, 'w') as f:
+with open(settings_path, 'w', newline='') as f:
     json.dump(settings, f, indent=2)
     f.write('\n')
 PYEOF
@@ -597,7 +599,7 @@ def register(key, command, prev_file, padding):
             counts['unchanged'] += 1
             return
         previous = str(current['command'])
-        with open(prev_file, 'w') as f:
+        with open(prev_file, 'w', newline='') as f:
             f.write(previous + '\n')
         os.chmod(prev_file, 0o600)
         for opt in ('padding', 'refreshInterval'):
@@ -620,7 +622,7 @@ register('subagentStatusLine', command + ' --subagents', os.path.join(office_hom
 
 print('  status line: ' + ', '.join(f'{n} {what}' for what, n in counts.items()))
 
-with open(settings_path, 'w') as f:
+with open(settings_path, 'w', newline='') as f:
     json.dump(settings, f, indent=2)
     f.write('\n')
 PYEOF

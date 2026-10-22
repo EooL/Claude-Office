@@ -339,7 +339,7 @@ syncBuiltinESMExports();`)
       const r = spawnSync(process.execPath, [SCRIPT, '--print-config', cli, '--root', g], { encoding: 'utf8', env: { ...process.env, HOME: home, USERPROFILE: home, CODEX_HOME: home } })
       expect(r.status).toBe(0)
       expect(r.stdout).toContain('claude-office-tools')
-      expect(r.stdout).toContain('UNVERIFIED')
+      if (cli !== 'claude') expect(r.stdout).toContain('UNVERIFIED')
       expect(r.stdout).not.toContain('\\')
     }
     expect(readdirSync(home)).toEqual([])

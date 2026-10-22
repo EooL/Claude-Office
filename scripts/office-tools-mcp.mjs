@@ -292,21 +292,21 @@ function printConfig(cli) {
   const head = `# Snippet for a human to add by hand. Nothing was written. Replace the --root value with the project the CLI will inspect.`
   const rule = `Headless runs also need a narrow permission rule for this MCP server (allow only the server "${NAME}", not every MCP server). Add it by hand; this script never edits any CLI setting.`
   const snippets = {
-    codex: ['~/.codex/config.toml (format UNVERIFIED: written from general knowledge of Codex, not checked against docs or a local file)',
-      `[mcp_servers.${NAME}]\ncommand = "node"\nargs = [${args.map(x => JSON.stringify(x)).join(', ')}]`,
-      'Rule (UNVERIFIED): Codex approval/sandbox policy decides whether MCP tool calls run unattended; check its docs for a per-server allow setting.'],
-    claude: ['.mcp.json in the project, or `claude mcp add` (format UNVERIFIED here; Claude Code is the best known of these)',
+    codex: ['~/.codex/config.toml, or .codex/config.toml in a trusted project (keys verified against the Codex MCP docs; the local ~/.codex/config.toml uses the same [mcp_servers.<name>] table and the approval key)',
+      `[mcp_servers.${NAME}]\ncommand = "node"\nargs = [${args.map(x => JSON.stringify(x)).join(', ')}]\nstartup_timeout_sec = 20\ndefault_tools_approval_mode = "approve"`,
+      'Rule: default_tools_approval_mode = "approve" is per server (documented values: auto, prompt, writes, approve). UNVERIFIED: whether `codex exec` honours it for MCP calls; an upstream issue reports MCP calls auto-cancelled in exec. Test by hand.'],
+    claude: ['.mcp.json in the project (or `claude mcp add --transport stdio --scope project ...`); format verified against the Claude Code MCP docs',
       json({ mcpServers: { [NAME]: { type: 'stdio', ...entry } } }),
-      `Rule: add "mcp__${NAME}" to permissions.allow in settings.json so headless runs can call the tools. ${rule}`],
-    agy: ['Antigravity CLI MCP config (file location and format UNVERIFIED; docs/hooks-other-clis-research.md only covers hooks)',
+      `Rule: add "mcp__${NAME}" to permissions.allow in settings.json (the documented glob form is "mcp__${NAME}__*"; rules with parentheses are skipped). Verified against the Claude Code docs, not run locally. ${rule}`],
+    agy: ['~/.gemini/config/mcp_config.json (global) or .agents/mcp_config.json (workspace); shape verified against the Antigravity MCP docs and the local global file',
       json({ mcpServers: { [NAME]: entry } }),
-      `Rule (UNVERIFIED syntax): a permission rule that allows only MCP tools of the server "${NAME}", e.g. of the form mcp(${NAME}). ${rule}`],
-    opencode: ['opencode.json, project or ~/.config/opencode/ (format UNVERIFIED: from memory of opencode docs)',
-      json({ mcp: { [NAME]: { type: 'local', command: ['node', ...args], enabled: true } } }),
-      `Rule (UNVERIFIED): opencode "permission" settings may need to allow the "${NAME}_*" tools for opencode run. ${rule}`],
-    qoder: ['~/.qoder/settings.json (a top-level `mcp` key exists there per the research doc; its inner shape is UNVERIFIED)',
-      json({ mcp: { [NAME]: entry } }),
-      `Rule (UNVERIFIED): allow only this server's tools in the "permissions" section of the same file. ${rule}`],
+      `Rule: under permissions.allow in ~/.gemini/antigravity-cli/settings.json add "mcp(${NAME}/*)" (docs: mcp(server/tool) or mcp(server/*); never mcp(*)). UNVERIFIED: that agy -p honours it; not run. ${rule}`],
+    opencode: ['opencode.json or opencode.jsonc in the project (user level ~/.config/opencode/ is inferred); keys verified against the OpenCode MCP docs',
+      json({ mcp: { [NAME]: { type: 'local', command: ['node', ...args], enabled: true, timeout: 20000 } } }),
+      `Rule (inferred): OpenCode permissions default to allow, so none should be needed; if "permission" was tightened, allow "${NAME}_*" (tools are prefixed with the server name). UNVERIFIED: the docs name no MCP permission key. ${rule}`],
+    qoder: ['~/.qoder/settings.json, <project>/.qoder/settings.json or <project>/.mcp.json, under a top-level `mcpServers` key (verified against the Qoder MCP reference; the local settings.json `mcp` key holds only enableAllProjectMcpServers, so the server table is not confirmed locally)',
+      json({ mcpServers: { [NAME]: { ...entry, timeout: 30000 } } }),
+      `Rule: add "mcp__${NAME}__*" to permissions.allow (Qoder docs example style mcp__<server>__*). UNVERIFIED: behaviour under qodercli -p and project-server approval. ${rule}`],
   }
   const s = snippets[cli]
   if (!s) { console.error(`usage: --print-config <${Object.keys(snippets).join('|')}>`); process.exit(2) }

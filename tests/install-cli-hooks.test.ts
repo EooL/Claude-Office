@@ -43,6 +43,12 @@ describe('explicit CLI hook installer', () => {
     expect(prepareInstall(cli, { home: dir, uninstall: true }).changed).toBe(false)
     expect(readdirSync(dirname(file)).filter(x => x.includes('.tmp.'))).toEqual([])
   })
+  it('Codex SessionEnd is registered without async (Codex runs it synchronously and warns at start-up); other events stay async', () => {
+    const tracker = 'D:/work/Claude-Office/hooks/cli-tracker.mjs'
+    expect(hookHandler('codex', 'SessionEnd', tracker).async).toBeUndefined()
+    expect(hookHandler('codex', 'Stop', tracker).async).toBe(true)
+    expect(hookHandler('qoder', 'SessionEnd', tracker).async).toBe(true)
+  })
   it('refuses invalid JSON and prints only its path, without leaking contents or making backups', () => {
     const dir = home(), file = configPath('codex', dir)
     mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, '{"secret":"not-to-log",')

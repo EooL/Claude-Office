@@ -24,7 +24,7 @@ export function hookHandler(cli, event, tracker) {
   const path = tracker.replaceAll('\\', '/')
   // Qoder's exec form avoids any shell; Codex/agy use quoted forward-slash paths.
   if (/["\r\n$`%]/.test(path)) throw new Error('Tracker path contains unsupported shell characters')
-  return { type: 'command', ...(cli === 'qoder' ? { command: 'node', args: [path, cli, event] } : { command: `node "${path}" ${cli} ${event}` }), timeout: 2, ...(cli === 'agy' ? {} : { async: true }) }
+  return { type: 'command', ...(cli === 'qoder' ? { command: 'node', args: [path, cli, event] } : { command: `node "${path}" ${cli} ${event}` }), timeout: 2, ...(cli === 'agy' || (cli === 'codex' && event === 'SessionEnd') ? {} : { async: true }) }
 }
 function object(v) { return !!v && typeof v === 'object' && !Array.isArray(v) }
 function mergeHooks(hooks, cli, tracker, uninstall) {

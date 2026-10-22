@@ -51,7 +51,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { hasFullAccess, isEnabled } from './settings.mjs'
+import { defaultModelFor, hasFullAccess, isEnabled } from './settings.mjs'
 
 const opt = (flag, value) => (value ? [flag, value] : [])
 const stripAnsiText = (text) => String(text).split(String.fromCharCode(27)).map((part, i) => (i === 0 ? part : part.replace(/^\[[0-9;]*m/, ''))).join('')
@@ -407,7 +407,12 @@ const onPath = (bin) => {
 /** Every service the office knows, each with `available` (its CLI is on PATH) and `enabled` (Settings allows it). */
 export function services() {
   return Object.entries(adapters)
-    .map(([name, a]) => ({ name, label: a.label, bin: a.bin, install: a.install, docs: a.docs, setup: a.setup, available: overrideOf(name) !== null || onPath(a.bin), enabled: isEnabled(name), fullAccessSupported: Boolean(a.fullAccessArgs), fullAccess: hasFullAccess(name) }))
+    .map(([name, a]) => ({ name, label: a.label, bin: a.bin, install: a.install, docs: a.docs, setup: a.setup, available: overrideOf(name) !== null || onPath(a.bin), enabled: isEnabled(name), fullAccessSupported: Boolean(a.fullAccessArgs), fullAccess: hasFullAccess(name), defaultModel: defaultModelFor(name), adapterDefaultModel: a.defaultModel ?? '' }))
+}
+
+/** The one place a model is chosen: the step's own, else the service's default (Settings), else the adapter's, else '' (the CLI's own). */
+export function resolveModel(name, explicit, settings) {
+  return explicit || defaultModelFor(name, settings) || adapters[name]?.defaultModel || ''
 }
 
 /** The lines that tell a user how to get a service that is not installed. */
@@ -487,7 +492,7 @@ export function runAdapter(name, prompt, { model, effort, mode = 'chat', write =
   // a level this CLI does not know (an old setting, another service's) is left out, not passed on
   const level = adapter.efforts?.includes(effort) ? effort : undefined
   const build = (text) => {
-    const built = adapter.args(text, { model: model || adapter.defaultModel, mode: runMode, effort: level, outFile, cwd })
+    const built = adapter.args(text, { model: resolveModel(name, model), mode: runMode, effort: level, outFile, cwd })
     // only an approved plan (write mode) on a service switched to full access: chat and planning stay restricted
     if (runMode === 'write' && adapter.fullAccessArgs && hasFullAccess(name)) built.push(...adapter.fullAccessArgs)
     return built

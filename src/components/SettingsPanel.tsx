@@ -27,6 +27,7 @@ import BrainsPanel from './BrainsPanel'
 import OrgChart from './OrgChart'
 import type { ProfileSummary } from './JobDescription'
 import ThemedSelect from './ThemedSelect'
+import DefaultModels from './DefaultModels'
 import '../styles/settings.css'
 import { setEventMode, useEventMode, type EventMode } from '../eventMode'
 
@@ -39,6 +40,8 @@ interface Service {
   /** the CLI has a mode that skips every permission prompt (used for an approved plan only) */
   fullAccessSupported?: boolean
   fullAccess?: boolean
+  defaultModel?: string
+  adapterDefaultModel?: string
   install?: string
   docs: string
   setup: string
@@ -153,7 +156,7 @@ export default function SettingsPanel({ readOnly, open, onClose }: { readOnly: b
     void load().then(body => { if (body) setFocus(body.selected) }) // availability may have changed
     void loadBrains()
   }, [open, load, loadBrains])
-  useEffect(() => { if (open && tab === 'brains') void loadModels() }, [open, tab, loadModels])
+  useEffect(() => { if (open && (tab === 'brains' || tab === 'services')) void loadModels() }, [open, tab, loadModels])
   useEffect(() => {
     if (!open || tab !== 'team') return
     void getJson<ProfileSummary[]>('/profiles').then(list => { if (Array.isArray(list)) setProfiles(list) }) // an older server has none: no markers
@@ -198,6 +201,13 @@ export default function SettingsPanel({ readOnly, open, onClose }: { readOnly: b
     const r = await send('POST', '/backends/full-access', { name, enabled })
     if (!r.ok) { setError(r.error ?? null); return }
     setData({ ...data, services: r.body.services })
+  }
+
+  const saveDefaultModel = async (name: string, model: string): Promise<string | null> => {
+    const r = await send('POST', '/backends/default-model', { name, model })
+    if (!r.ok) return r.error ?? 'Could not save'
+    setData(d => (d ? { ...d, services: r.body.services } : d))
+    return null
   }
 
   const setEnabled = async (name: string, enabled: boolean) => {
@@ -257,6 +267,8 @@ export default function SettingsPanel({ readOnly, open, onClose }: { readOnly: b
           </li>
         ))}
       </ul>
+
+      {!firstRun && <DefaultModels services={data.services} models={models} readOnly={readOnly} onSave={saveDefaultModel} />}
 
       {nothingEnabled && !firstRun && <p className="backend-error" role="alert">No service is turned on, so the chat and the agents cannot answer. Turn one on above.</p>}
 

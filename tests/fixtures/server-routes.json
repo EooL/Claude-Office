@@ -16,6 +16,7 @@
     "POST /backends/agent",
     "POST /backends/enable",
     "POST /backends/full-access",
+    "POST /backends/default-model",
     "POST /backends/select",
     "GET /brains",
     "GET /brains/catalogue",

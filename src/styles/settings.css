@@ -313,3 +313,10 @@ button.org-node:focus-visible { outline: 2px solid var(--meter-electric-hi, #9ad
 .full-access { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin: 4px 0 2px; padding: 8px 10px; background: var(--meter-tip-bg, #0f1113); border-left: 3px solid var(--meter-warn, #f0b429); border-radius: 4px; font-size: 12px; color: var(--meter-sub, #8b8d91); }
 .full-access .switch { margin-right: 0; margin-top: 2px; }
 .switch.is-on.is-warn { background: var(--meter-warn, #f0b429); border-color: var(--meter-warn, #f0b429); }
+.default-models { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
+.default-model-row { display: flex; flex-direction: column; gap: 2px; }
+.default-model-label { font-size: 12px; color: var(--meter-sub, #8b8d91); }
+.default-model-field { display: flex; align-items: center; gap: 8px; }
+.default-model-field .ts { flex: 1; min-width: 0; }
+.default-model-row .backend-note { margin: 0; font-size: 11px; }
+.default-model-ok { color: var(--meter-ok, #4ade80); font-size: 12px; }

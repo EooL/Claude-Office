@@ -23,7 +23,7 @@
 
 import { adapters, listModels, services } from './adapters.mjs'
 import { listRoles } from './roles.mjs'
-import { agentsMap, isEnabled, readSettings, resolveAgent, setAgentConfig, setFullAccess, setServiceEnabled, writeSettings } from './settings.mjs'
+import { agentsMap, isEnabled, readSettings, resolveAgent, setAgentConfig, setDefaultModel, setFullAccess, setServiceEnabled, validModelId, writeSettings } from './settings.mjs'
 
 /** Every role with what it really works with (its own choice, else its manager's, else the office's). */
 function effectiveAgents() {
@@ -97,6 +97,15 @@ export function mountBackends(app, { requireUi, onServicesChanged }) {
     if (!service.fullAccessSupported) return res.status(400).json({ error: `${service.label} has no full-access mode` })
     if (typeof req.body?.enabled !== 'boolean') return res.status(400).json({ error: 'enabled must be true or false' })
     setFullAccess(name, req.body.enabled)
+    res.json({ ok: true, services: services() })
+  })
+
+  // The model a service uses when a brain names none ('' goes back to the service's own default)
+  app.post('/backends/default-model', requireUi, (req, res) => {
+    const name = typeof req.body?.name === 'string' ? req.body.name : ''
+    if (!adapters[name]) return res.status(400).json({ error: 'Unknown service' })
+    if (!validModelId(req.body?.model)) return res.status(400).json({ error: 'Invalid model' })
+    setDefaultModel(name, req.body.model)
     res.json({ ok: true, services: services() })
   })
 

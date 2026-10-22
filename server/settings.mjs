@@ -78,6 +78,26 @@ export function setFullAccess(service, enabled) {
   return next
 }
 
+/** A model id as the setting accepts it: a string of at most 200 characters without control characters ('' allowed: no default). */
+export function validModelId(model) {
+  return typeof model === 'string' && model.length <= 200 && ![...model].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127)
+}
+
+/** The model a service uses when a brain names none (Settings > Services), or '' for none. */
+export function defaultModelFor(service, settings = readSettings()) {
+  const m = settings.defaultModels?.[service]
+  return typeof m === 'string' ? m : ''
+}
+
+/** Set (or, with '', remove) a service's default model; the caller has checked the service and the id. */
+export function setDefaultModel(service, model) {
+  const next = { ...(readSettings().defaultModels ?? {}) }
+  if (model.trim()) next[service] = model.trim()
+  else delete next[service]
+  writeSettings({ defaultModels: next })
+  return next
+}
+
 /** Enable or disable one service; `installed` (the names of the installed services) is the starting list for an old settings file. */
 export function setServiceEnabled(service, enabled, installed = []) {
   const settings = readSettings()

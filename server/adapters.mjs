@@ -43,6 +43,8 @@
 //   outFile       (optional) true when args() writes the final answer to `outFile` and stdout is
 //                 log or JSON noise; the file is read back and handed to parse as `file`
 //   timeoutMs     (optional) a longer limit than the chat's CHAT_AI_TIMEOUT for a slow CLI
+//   activity      (optional) ({ since, env }) => epoch ms of the CLI's latest sign of life (0 = none); lets a run that is
+//                 quiet on stdout but busy go past timeoutMs (a soft deadline, see runAdapter). Must never throw.
 //   timeoutHint   (optional) ({ since }) => text, asked when a run was killed by its timeout: what the CLI's own log
 //                 says about why (a limit it never printed). The text joins the error, so classifyFailure sees it.
 // Everything else (scripts/office-run.mjs, scripts/chat-backend.mjs, the chat watcher, the
@@ -57,6 +59,8 @@ const opt = (flag, value) => (value ? [flag, value] : [])
 const stripAnsiText = (text) => String(text).split(String.fromCharCode(27)).map((part, i) => (i === 0 ? part : part.replace(/^\[[0-9;]*m/, ''))).join('')
 
 const NEUTRAL_USAGE = Object.freeze({ inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0, totalTokens: 0, costUsd: 0 })
+
+const qoderRunsRoot = (env = process.env) => env.AGENT_OFFICE_QODER_LOGS || join(homedir(), '.qoder', 'logs', 'runs')
 
 function terminateTree(child) {
   if (!child.pid) return
@@ -202,6 +206,13 @@ export const adapters = {
       instruction: (file) => `The whole task is in the file ${file}. Read it with your file read tool and carry it out exactly as written. Do not run shell commands.`,
       args: (args, _file, dir) => ['--add-dir', dir, ...args],
     },
+    // Headless it prints nothing until the end; its conversation database is written to while it works.
+    activity: ({ since, env }) => {
+      try {
+        const root = env?.AGENT_OFFICE_AGY_CONVERSATIONS || join(homedir(), '.gemini', 'antigravity-cli', 'conversations')
+        return Math.max(0, ...readdirSync(root).filter((n) => n.endsWith('.db')).map((n) => statSync(join(root, n)).mtimeMs).filter((t) => t >= since))
+      } catch { return 0 }
+    },
     models: async () => parseAgyModels(await cliOutput('agy', ['models'])),
     args: (prompt, { model, mode }) => [
       // Headless it cannot ask, so a shell command is refused and the run reports "blocked". Its file tools work
@@ -297,9 +308,16 @@ export const adapters = {
       args: (args, file) => ['--attachment', file, ...args],
     },
     // Over its usage limit it prints nothing and polls the queue until killed; the limit shows only in its own run log.
+    // Newest write to a run log of this run: quiet on stdout does not mean idle.
+    activity: ({ since, env }) => {
+      try {
+        const root = qoderRunsRoot(env)
+        return Math.max(0, ...readdirSync(root).map((n) => statSync(join(root, n, 'qodercli.log'), { throwIfNoEntry: false })?.mtimeMs ?? 0).filter((t) => t >= since))
+      } catch { return 0 }
+    },
     timeoutHint: ({ since }) => {
       try {
-        const root = process.env.AGENT_OFFICE_QODER_LOGS || join(homedir(), '.qoder', 'logs', 'runs')
+        const root = qoderRunsRoot()
         const runs = readdirSync(root).map((n) => ({ n, t: statSync(join(root, n)).mtimeMs })).filter((r) => r.t >= since).sort((a, b) => b.t - a.t).slice(0, 3)
         for (const run of runs) {
           const log = readFileSync(join(root, run.n, 'qodercli.log'), 'utf8').slice(-40_000)
@@ -482,7 +500,7 @@ function cliOutput(name, args, timeoutMs = 30_000) {
  * extra variables for it. The same prompt gives the same kind of answer from every CLI: one that cannot take it
  * (a prompt longer than a command line allows) answers with an `error`, it never throws or rejects.
  */
-export function runAdapter(name, prompt, { model, effort, mode = 'chat', write = false, timeoutMs = 0, onData, cwd, env } = {}) {
+export function runAdapter(name, prompt, { model, effort, mode = 'chat', write = false, timeoutMs = 0, activeWindowMs = 45_000, maxMs = Math.max(timeoutMs * 5, 30 * 60_000), onData, cwd, env } = {}) {
   const adapter = adapters[name]
   if (!adapter) throw new Error(`unknown adapter '${name}' (${adapterNames.join(', ')})`)
   const dir = adapter.outFile ? mkdtempSync(join(tmpdir(), 'office-')) : null
@@ -549,9 +567,24 @@ export function runAdapter(name, prompt, { model, effort, mode = 'chat', write =
       child.stdin.end(prompt)
     }
     let timedOut = false
-    const timer = timeoutMs && setTimeout(() => { timedOut = true; terminateTree(child) }, timeoutMs)
-    child.stdout.on('data', (d) => { out += d; onData?.(d) })
-    child.stderr.on('data', (d) => { stderr = (stderr + d).slice(-4000); if (process.env.CHAT_AI_DEBUG) process.stderr.write(d) })
+    let lastData = 0
+    // timeoutMs is a soft deadline: a CLI that showed a sign of life in the last activeWindowMs gets another window,
+    // up to maxMs in all; one that showed none (or whose probe fails) is ended at timeoutMs, as before
+    const windowMs = Math.min(activeWindowMs, timeoutMs) // never longer than the deadline itself
+    const check = () => {
+      const now = Date.now()
+      let probed = 0
+      try { probed = Number(adapter.activity?.({ since: started, env: { ...process.env, ...env } })) || 0 } catch { /* a failing probe is no activity */ }
+      if (now - Math.max(lastData, probed) < windowMs && now - started < maxMs) {
+        timer = setTimeout(check, Math.max(1, Math.min(windowMs, started + maxMs - now)))
+        return
+      }
+      timedOut = true
+      terminateTree(child)
+    }
+    let timer = timeoutMs && setTimeout(check, timeoutMs)
+    child.stdout.on('data', (d) => { lastData = Date.now(); out += d; onData?.(d) })
+    child.stderr.on('data', (d) => { lastData = Date.now(); stderr = (stderr + d).slice(-4000); if (process.env.CHAT_AI_DEBUG) process.stderr.write(d) })
     const done = (code, err) => {
       if (finished) return
       finished = true

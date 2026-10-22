@@ -145,6 +145,16 @@ describe('agy refusedCommand hook', () => {
     writeFileSync(join(c, 'new.db'), `"CommandLine":"${'z'.repeat(500)}"`)
     expect(hook({ since: 5000, env: { AGENT_OFFICE_AGY_CONVERSATIONS: c } })).toHaveLength(200)
   })
+  it('redacts a credential value that crosses the 200-character cut instead of leaving a fragment of it', () => {
+    const c = dir('conv-secret')
+    // `token="..."` whose value runs past character 200: cutting before redaction used to leave the tail behind
+    const command = `echo ${'a'.repeat(150)} token="SECRET_VALUE_THAT_CROSSES_THE_CUT trailing words" && done`
+    writeFileSync(join(c, 'x.db'), `"CommandLine":"${command.replace(/"/g, '\\"')}"`)
+    const out = hook({ since: 0, env: { AGENT_OFFICE_AGY_CONVERSATIONS: c } })
+    expect(out.length).toBeLessThanOrEqual(200)
+    expect(out).not.toMatch(/SECRET_VALUE|CROSSES|trailing|SECRET/)
+    expect(out).toContain('[redacted]')
+  })
   it('gives an empty string for a missing folder', () => {
     expect(hook({ since: 0, env: { AGENT_OFFICE_AGY_CONVERSATIONS: join(home, 'nope') } })).toBe('')
   })

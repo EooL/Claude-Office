@@ -58,6 +58,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { defaultModelFor, hasFullAccess, isEnabled } from './settings.mjs'
 import { classifyFailure } from './availability.mjs'
 import { projectPath, readProjectFile, safeGitArgs, safeGitEnv } from './project-files.mjs'
+import { cleanToolText } from './tool-needs.mjs'
 
 const AGY_LIMITS = Object.freeze({ maxList: 400, maxFiles: 12, maxFileChars: 40_000, maxTotalChars: 150_000, maxWalk: 5000, maxWalkFileBytes: 1_000_000 })
 const WALK_SKIP = /^(node_modules|dist|build|coverage)$/
@@ -319,7 +320,8 @@ export const adapters = {
         if (!newest || !statSync(newest.p).isFile() || statSync(newest.p).size > 8 * 1024 * 1024) return ''
         let last = ''
         for (const m of readProjectFile(realpathSync(root), basename(newest.p), 8 * 1024 * 1024).buf.toString('latin1').matchAll(/"CommandLine":"((?:[^"\\]|\\.)*)"/g)) last = m[1]
-        return last.replace(/\\(["\\])/g, '$1').slice(0, 200)
+        // Redact first, cut afterwards: cutting first could leave half of a credential value past the redaction pattern.
+        return cleanToolText(last.replace(/\\(["\\])/g, '$1'), 200)
       } catch { return '' }
     },
     models: async () => parseAgyModels(await cliOutput('agy', ['models'])),

@@ -8,3 +8,6 @@ tests/fixtures/file-layout.json text eol=lf
 *.sh text eol=lf
 *.py text eol=lf
 hooks/*.sh text eol=lf
+# Shipped agent profiles and the master prompt are compared byte for byte by tests and must stay LF in Windows checkouts.
+server/agent-profiles/*.md text eol=lf
+server/master-prompt.default.md text eol=lf

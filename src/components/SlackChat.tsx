@@ -5,7 +5,7 @@ import IncidentBadge from './IncidentBadge'
 import { postSetting } from '../permissions'
 import { officeHttpBase } from '../serverUrl'
 import ChatContent from './ChatContent'
-import ChatActions, { useChatActions } from './ChatActions'
+import { ActionMessage, useChatActions } from './ChatActions'
 
 export function getAvatarSrc(role: string, agentId?: string): string {
   const charBase = ROLE_TO_CHAR[role] ?? 'employee-3'
@@ -282,8 +282,7 @@ const SlackChat: React.FC<SlackChatProps> = ({ messages, activeAgentCount, muted
                     </div>
                   )}
                   <div className={`slack-msg-text${msg.isSystem ? ' slack-system-text' : ''}`}>
-                    <ChatContent text={msg.text.replace(/^\/goal --plan-id=[a-f0-9]{64}$/, 'Approved the displayed plan.').replace(/^NEXT_ACTION:[ \t]*/gm, 'Suggested next step: ')} messageId={msg.id} readOnly={readOnly} />
-                    <ChatActions actions={nextActions.filter(action => action.messageId === msg.id)} />
+                    <ActionMessage text={msg.text.replace(/^\/goal --plan-id=[a-f0-9]{64}$/, 'Approved the displayed plan.')} messageId={msg.id} readOnly={readOnly} actions={nextActions.filter(action => action.messageId === msg.id)} />
                   </div>
                   {msg.reactions && msg.reactions.length > 0 && (
                     <div className="slack-reactions">

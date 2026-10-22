@@ -151,9 +151,12 @@ export function planPrompt({ name, role, task, cwd }) {
   ].join('\n') })
 }
 
-export function goalPrompt({ name, role, goal, plan, cwd }) {
+export function goalPrompt({ name, role, goal, plan, cwd, request }) {
+  // The plan is the model's summary and can drop details (file names, limits); the boss's own words always travel with it.
+  const original = typeof request === 'string' && request.trim() && request.trim() !== String(goal).trim() ? request.trim().slice(0, 6000) : ''
   return composeAgentPrompt({ master: masterPrompt(cwd), jobDescription: intro({ name, role, cwd }), task: [
     'The boss approved this plan.',
+    ...(original ? ['The boss\'s original request, word for word (it takes precedence over the plan summary where they differ):', original] : []),
     `Goal: ${goal}`,
     'Plan:',
     plan,
@@ -311,7 +314,7 @@ export async function handleGoal(deps, text) {
   const result = await work(deps, {
     identity: { sessionId: plan.sessionId, createdBy: plan.createdBy, routedBy: plan.routedBy, ...deps.identity },
     name: plan.name, role: plan.role, task: short(goal), mode: 'write', timeoutMs: GOAL_TIMEOUT_MS, status: 'working on the goal',
-    prompt: goalPrompt({ name: plan.name, role: plan.role, goal, plan: plan.plan, cwd: deps.cwd }),
+    prompt: goalPrompt({ name: plan.name, role: plan.role, goal, plan: plan.plan, cwd: deps.cwd, request: plan.task }),
   })
   const report = boundaryReport(before, boundarySnapshot(deps.cwd))
   if (!result) {

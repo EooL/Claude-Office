@@ -39,6 +39,22 @@ it('planPrompt and goalPrompt carry the job description and the rest of the old 
   expect(jobLayer(plan).length).toBeLessThan(8000)
 })
 
+it('goalPrompt keeps the boss\'s original request when the goal or plan summarises it, and only then', () => {
+  const request = 'Read server/a.mjs and scripts/b.mjs and list the top 3 risks with file and line.'
+  const withRequest = goalPrompt({ name: 'Dee', role: 'debugger', goal: 'Review three files', plan: '- read the files', cwd, request })
+  const task = taskLayer(withRequest)
+  expect(task.indexOf(request)).toBeGreaterThan(-1)
+  expect(task.indexOf(request)).toBeLessThan(task.indexOf('Goal: Review three files'))
+  expect(task).toContain('takes precedence over the plan summary')
+  // the same text as the goal is not repeated, and no request leaves the prompt exactly as it was
+  const same = taskLayer(goalPrompt({ name: 'Dee', role: 'debugger', goal: request, plan: 'p', cwd, request }))
+  expect(same.split(request).length - 1).toBe(1)
+  expect(taskLayer(goalPrompt({ name: 'Dee', role: 'debugger', goal: 'g', plan: 'p', cwd }))).not.toContain('original request')
+  expect(taskLayer(goalPrompt({ name: 'Dee', role: 'debugger', goal: 'g', plan: 'p', cwd, request: '   ' }))).not.toContain('original request')
+  // a very long request is capped
+  expect(taskLayer(goalPrompt({ name: 'Dee', role: 'debugger', goal: 'g', plan: 'p', cwd, request: 'x'.repeat(9000) })).length).toBeLessThan(8500)
+})
+
 it('an unknown or malformed role falls back to the old one-line text', () => {
   for (const role of ['Claude', '../x', 'nobody']) {
     expect(jobLayer(planPrompt({ name: 'N', role, task: 't', cwd }))).toBe(OLD('N', role))

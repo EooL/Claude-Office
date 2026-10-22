@@ -83,7 +83,13 @@ describe('loadRuntimeConfig', () => {
     expect(await loadRuntimeConfig({ fetchImpl: fakeFetch({ error: 'nope' }, { status: 404 }).fetchImpl, base: 'http://127.0.0.1:3334' })).toBeNull()
     expect(await loadRuntimeConfig({ fetchImpl: fakeFetch('not json').fetchImpl, base: 'http://127.0.0.1:3334' })).toBeNull()
     expect(await loadRuntimeConfig({ fetchImpl: fakeFetch({ port: 3334 }).fetchImpl, base: 'http://127.0.0.1:3334' })).toBeNull()
-    expect(await loadRuntimeConfig({ fetchImpl: undefined as never, base: 'http://127.0.0.1:3334' })).toBeNull()
+    const offline = fakeFetch(null, { reject: true })
+    vi.stubGlobal('fetch', offline.fetchImpl)
+    try {
+      expect(await loadRuntimeConfig({ fetchImpl: undefined as never, base: 'http://127.0.0.1:4123' })).toBeNull()
+      expect(offline.calls[0].url).toBe('http://127.0.0.1:4123/config')
+      expect(offline.calls[0].init?.signal).toBeInstanceOf(AbortSignal)
+    } finally { vi.unstubAllGlobals() }
     expect(config.BOSS_NAME).toBe(BUILD_TIME_BOSS.name)
     expect(AGENT_CONFIGS['boss'].title).toBe(BUILD_TIME_BOSS.name)
     expect(config.ROLE_TO_CHAR['boss']).toBe(BUILD_TIME_BOSS.sprite)

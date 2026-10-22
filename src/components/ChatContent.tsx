@@ -4,6 +4,7 @@ import { chatTokens, targetKind } from '../../server/chat-markup.mjs'
 import { getUiToken } from '../permissions'
 import { officeHttpBase } from '../serverUrl'
 import '../styles/chat-content.css'
+import { displayChatText } from '../chatText'
 
 interface FileLink { target: string; label: string }
 interface Props { text: string; messageId: number; readOnly?: boolean; basePath?: string; onOpen?: (file: FileLink) => void }
@@ -90,7 +91,7 @@ export default function ChatContent({ text, messageId, readOnly = false, basePat
   const trigger = useRef<HTMLElement | null>(null)
   const open = onOpen ?? ((file: FileLink) => { trigger.current = document.activeElement as HTMLElement; setSelected(file) })
   return <>
-    <span className="chat-rich-text">{chatTokens(text).map((token, index) => {
+    <span className="chat-rich-text">{chatTokens(displayChatText(text)).map((token, index) => {
       if (token.kind === 'text') return <React.Fragment key={index}>{token.label}</React.Fragment>
       if (token.kind === 'code') return <code key={index}>{token.label}</code>
       const target = resolveTarget(token.target ?? '', basePath)

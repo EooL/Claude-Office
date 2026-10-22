@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync, existsSync, mkdirSync, writeFileSync, renameSync, unlinkSync, realpathSync } from 'node:fs'
+import { readFileSync, existsSync, mkdirSync, writeFileSync, renameSync, unlinkSync, rmSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -88,20 +88,30 @@ export function prepareInstall(cli, { home, tracker = fileURLToPath(new URL('../
   }
   return { cli, file, before, after, changed: before !== after }
 }
-export function applyInstall(plan) {
+export function applyInstall(plan, { rename = renameSync, pause = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms) } = {}) {
   if (!plan.changed) return
   const { file, before, after } = plan
   mkdirSync(dirname(file), { recursive: true })
   // Refuse a concurrent edit instead of overwriting its owner's changes.
   const current = existsSync(file) ? readFileSync(file, 'utf8') : null
   if (current !== before) throw new Error(`${file}: changed during installation; retry`)
-  if (before !== null) writeFileSync(`${file}.backup.${randomUUID()}`, before, { flag: 'wx', mode: 0o600 })
+  const backup = before !== null ? `${file}.backup.${randomUUID()}` : null
+  if (backup) writeFileSync(backup, before, { flag: 'wx', mode: 0o600 })
   if (after === null) { unlinkSync(file); return }
   const tmp = `${file}.tmp.${randomUUID()}`
   try {
     writeFileSync(tmp, after, { flag: 'wx', mode: 0o600 })
-    renameSync(tmp, file)
-  } finally { if (existsSync(tmp)) unlinkSync(tmp) }
+    // Windows refuses to replace a file another process has open; retry briefly (same idea as server/registry.mjs).
+    for (let attempt = 1; ; attempt++) {
+      try { rename(tmp, file); break } catch (error) {
+        if (!['EPERM', 'EACCES', 'EBUSY'].includes(error.code) || attempt >= 6) {
+          if (backup) rmSync(backup, { force: true }) // the target was not changed, so the backup is only noise
+          throw new Error(`${file}: could not replace the file (${error.code ?? error.message}); nothing was changed`)
+        }
+        pause(20 * attempt)
+      }
+    }
+  } finally { rmSync(tmp, { force: true }) }
 }
 export function hooksInstalled(cli, home) {
   try {
@@ -115,17 +125,21 @@ export function hooksInstalled(cli, home) {
 
 export function runInstaller(args, print = console.log) {
   const [cli, ...options] = args
-  if (![...CLIS, 'all'].includes(cli)) throw new Error('Usage: node scripts/install-cli-hooks.mjs <codex|agy|opencode|qoder|all> [--home <dir>] [--dry-run] [--write] [--uninstall] [--print]')
-  let home = homedir(), write = false, dry = false, uninstall = false
+  if (![...CLIS, 'all'].includes(cli)) throw new Error('Usage: node scripts/install-cli-hooks.mjs <codex|agy|opencode|qoder|all> [--home <dir>] [--dry-run] [--write] [--uninstall] [--print] (agy also needs --unverified-agy-contract; \`all\` skips agy)')
+  let home = homedir(), write = false, dry = false, uninstall = false, unverifiedAgy = false
   for (let i = 0; i < options.length; i++) {
     if (options[i] === '--home' && options[i + 1] && !options[i + 1].startsWith('--')) home = options[++i]
     else if (options[i] === '--write') write = true
     else if (options[i] === '--dry-run') dry = true
     else if (options[i] === '--uninstall') uninstall = true
+    else if (options[i] === '--unverified-agy-contract') unverifiedAgy = true
     else if (options[i] !== '--print') throw new Error(`Unknown option: ${options[i]}`)
   }
+  // agy's PreToolUse reply contract is unconfirmed, and a hook can approve tools: opt in explicitly, never via `all`.
+  if (cli === 'agy' && !uninstall && !unverifiedAgy) throw new Error('agy hooks are not installed by default: its PreToolUse reply contract is unconfirmed and hooks can approve tools. Add --unverified-agy-contract to install anyway.')
+  if (cli === 'agy' && !uninstall) print('WARNING: agy PreToolUse reply contract is unconfirmed; hooks can approve tools. The Agent Office tracker replies {} (no decision) but verify this yourself.')
   // Validate every target before any write when installing all.
-  const plans = (cli === 'all' ? CLIS : [cli]).map(c => prepareInstall(c, { home, uninstall }))
+  const plans = (cli === 'all' ? CLIS.filter(c => c !== 'agy') : [cli]).map(c => prepareInstall(c, { home, uninstall }))
   for (const plan of plans) {
     if (write && !dry) applyInstall(plan)
     print(`${plan.cli}: ${plan.changed ? write && !dry ? uninstall ? 'uninstalled' : 'installed' : uninstall ? 'would uninstall' : 'would install' : 'unchanged'} - ${plan.file}`)

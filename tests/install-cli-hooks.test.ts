@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { renameSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { CLIS, prepareInstall, applyInstall, configPath, hooksInstalled, hookHandler, runInstaller, CODEX_TRUST, pluginSource } from '../scripts/install-cli-hooks.mjs'
 import { checkCliHooks } from '../scripts/doctor.mjs'
@@ -48,6 +49,37 @@ describe('explicit CLI hook installer', () => {
     const result = spawnSync(process.execPath, ['scripts/install-cli-hooks.mjs', 'codex', '--home', dir, '--write'], { encoding: 'utf8' })
     expect(result.status).toBe(1); expect(result.stderr).toContain(file); expect(result.stderr).not.toContain('not-to-log')
     expect(readdirSync(dirname(file))).toEqual(['hooks.json'])
+  })
+  it('`all` skips agy; agy needs --unverified-agy-contract and prints a warning', () => {
+    const dir = home(); const lines: string[] = []
+    runInstaller(['all', '--home', dir, '--write'], l => lines.push(l))
+    expect(existsSync(configPath('agy', dir))).toBe(false)
+    expect(existsSync(configPath('codex', dir))).toBe(true)
+    expect(() => runInstaller(['agy', '--home', dir, '--write'], () => {})).toThrow('--unverified-agy-contract')
+    expect(existsSync(configPath('agy', dir))).toBe(false)
+    lines.length = 0
+    runInstaller(['agy', '--home', dir, '--write', '--unverified-agy-contract'], l => lines.push(l))
+    expect(lines.join('\n')).toMatch(/WARNING: agy PreToolUse reply contract is unconfirmed/)
+    expect(hooksInstalled('agy', dir)).toBe(true)
+    runInstaller(['agy', '--home', dir, '--write', '--uninstall'], () => {})
+    expect(hooksInstalled('agy', dir)).toBe(false)
+  })
+  it('retries a rename that fails with EPERM, and on final failure leaves the target, no temp and no backup', () => {
+    const dir = home(), file = configPath('codex', dir)
+    put(file, { model: 'owner' })
+    const eperm = () => Object.assign(new Error('busy'), { code: 'EPERM' })
+    let calls = 0
+    const flaky = (from: string, to: string) => { if (++calls <= 2) throw eperm(); renameSync(from, to) }
+    applyInstall(prepareInstall('codex', { home: dir }), { rename: flaky, pause: () => {} })
+    expect(calls).toBe(3)
+    expect(hooksInstalled('codex', dir)).toBe(true)
+    applyInstall(prepareInstall('codex', { home: dir, uninstall: true }), { rename: flaky, pause: () => {} })
+    const before = readFileSync(file, 'utf8')
+    const plan = prepareInstall('codex', { home: dir })
+    const names = readdirSync(dirname(file)).sort()
+    expect(() => applyInstall(plan, { rename: () => { throw eperm() }, pause: () => {} })).toThrow('nothing was changed')
+    expect(readFileSync(file, 'utf8')).toBe(before)
+    expect(readdirSync(dirname(file)).sort()).toEqual(names)
   })
   it('validates all targets before writing any', () => {
     const dir = home(); put(configPath('qoder', dir), [])

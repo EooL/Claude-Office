@@ -39,7 +39,8 @@ export function mountChatActions(app, { db, requireUi, readState, enqueue, log =
   function available() {
     const state = readState()
     let busy = state.busy && now() - state.busy.at < 30 * 60_000
-    if (state.busy?.pid) {
+    // The ceiling is hard: a live PID only extends busy inside it (a recycled PID must not hide actions forever).
+    if (state.busy?.pid && !(now() - state.busy.at >= 30 * 60_000)) {
       try { process.kill(state.busy.pid, 0); busy = true } catch (error) { busy = error.code !== 'ESRCH' }
     }
     if (busy) return []

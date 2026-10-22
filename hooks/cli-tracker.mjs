@@ -70,17 +70,20 @@ export async function sendEvent(event, { env = process.env, fetchImpl = globalTh
 async function main() {
   if (process.env.AGENT_OFFICE_RUN === '1') return
   const [cli, event] = process.argv.slice(2)
-  // agy's decision hooks need a neutral reply even on invalid input or a down server.
-  if (cli === 'agy' && event === 'PreToolUse') process.stdout.write('{"decision":"allow"}')
-  else if (cli === 'agy' && ['PostToolUse', 'Stop'].includes(event)) process.stdout.write('{}')
-  const timer = setTimeout(() => process.exit(0), 2000)
+  // agy hooks get a neutral reply even on invalid input or a down server. Never a decision: the tracker must not approve tools.
+  if (cli === 'agy' && ['PreToolUse', 'PostToolUse', 'Stop'].includes(event)) process.stdout.write('{}')
+  let timer = setTimeout(() => process.exit(0), 500) // stdin cap; the send below gets its own 2 s
   try {
-    let input = ''
+    let input = '', payload
+    // Stop at the first complete JSON object: a stdin that never closes must not delay the tool call.
     for await (const chunk of process.stdin) {
       input += chunk
       if (Buffer.byteLength(input) > 256 * 1024) return
+      try { payload = JSON.parse(input); break } catch {}
     }
-    await sendEvent(normalizeEvent(cli, event, JSON.parse(input)))
+    if (payload === undefined) return
+    clearTimeout(timer); timer = setTimeout(() => process.exit(0), 2000)
+    await sendEvent(normalizeEvent(cli, event, payload))
   } catch {} finally { clearTimeout(timer) }
 }
 

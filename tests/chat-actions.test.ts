@@ -6,7 +6,7 @@ import { mountChatActions, nextAction, planId } from '../server/chat-actions.mjs
 import { handleGoal } from '../server/delegation.mjs'
 import { clipDelegationChat } from '../server/chat-limits.mjs'
 
-function fixture(existingDb?: Database.Database) {
+function fixture(existingDb?: Database.Database, clock: () => number = () => 1000) {
   const db = existingDb ?? new Database(':memory:')
   db.exec('CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY, sender TEXT, role TEXT, text TEXT, timestamp INTEGER, is_system INTEGER DEFAULT 0, recipient TEXT, msg_type TEXT)')
   const insert = (text: string, role = 'assistant', sender = 'Reviewer') => Number(db.prepare('INSERT INTO messages (sender,role,text,timestamp) VALUES (?,?,?,1000)').run(sender, role, text).lastInsertRowid)
@@ -14,7 +14,7 @@ function fixture(existingDb?: Database.Database) {
   const decisions: string[] = []
   let paused = false
   const app = express(); app.use(express.json())
-  mountChatActions(app, { db, log: (text: string) => { decisions.push(text) }, requireUi: (req: any, res: any, next: any) => req.headers.authorization === 'Bearer fixture' ? next() : res.sendStatus(401), readState: () => state, paused: () => paused, now: () => 1000,
+  mountChatActions(app, { db, log: (text: string) => { decisions.push(text) }, requireUi: (req: any, res: any, next: any) => req.headers.authorization === 'Bearer fixture' ? next() : res.sendStatus(401), readState: () => state, paused: () => paused, now: clock,
     enqueue: (text: string, msgType: string) => { const id = insert(text, msgType === 'goal' ? 'boss' : 'default', 'Boss'); db.prepare('UPDATE messages SET msg_type = ? WHERE id = ?').run(msgType, id); return { id } },
   })
   const get = () => request(app).get('/chat/actions').set('Authorization', 'Bearer fixture')
@@ -56,6 +56,19 @@ describe('scoped next-step approvals', () => {
     expect((await f.approve(action.id)).status).toBe(409)
     f.insert('Work on another task first', 'default', 'Boss')
     expect((await f.get()).body.actions).toEqual([])
+    f.db.close()
+  })
+  it('busy: a live PID extends only within the 30-minute ceiling, a dead PID ends it early', async () => {
+    let t = 1000
+    const f = fixture(undefined, () => t)
+    f.insert('NEXT_ACTION: Check the failing test in the checkout.')
+    f.state.busy = { pid: process.pid, at: 1000 }
+    expect((await f.get()).body.actions).toEqual([])
+    t = 1000 + 31 * 60_000
+    expect((await f.get()).body.actions).toHaveLength(1)
+    t = 1000 + 60_000
+    f.state.busy = { pid: 2 ** 22 + 12345, at: 1000 }
+    expect((await f.get()).body.actions).toHaveLength(1)
     f.db.close()
   })
   it('binds execution approval to the current plan and enqueues exactly one authenticated goal', async () => {

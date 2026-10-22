@@ -24,6 +24,12 @@ interface Props {
   onSave: (service: string, model: string) => Promise<string | null>
 }
 
+/** What committing `value` means: the trimmed model, and whether it differs from the stored one (else no network call). */
+export function saveDecision(value: string, stored?: string) {
+  const next = value.trim()
+  return { next, call: next !== (stored ?? '') }
+}
+
 export default function DefaultModels({ services, models, readOnly, onSave }: Props) {
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [status, setStatus] = useState<Record<string, 'saved' | string>>({})
@@ -31,11 +37,13 @@ export default function DefaultModels({ services, models, readOnly, onSave }: Pr
   if (!rows.length) return null
 
   const save = async (s: DefaultModelService, value: string) => {
-    const next = value.trim()
-    if (next === (s.defaultModel ?? '')) return
+    const { next, call } = saveDecision(value, s.defaultModel)
+    // The typed draft goes either way: with nothing to save the field must show the stored value again.
+    const dropDraft = () => setDrafts(d => { const { [s.name]: _gone, ...rest } = d; return rest })
+    if (!call) { dropDraft(); return }
     const error = await onSave(s.name, next)
     setStatus(st => ({ ...st, [s.name]: error ?? 'saved' }))
-    setDrafts(d => { const { [s.name]: _gone, ...rest } = d; return rest })
+    dropDraft()
   }
 
   return (

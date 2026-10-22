@@ -82,8 +82,33 @@ describe('silent bounded tracker process', () => {
   it('AGENT_OFFICE_RUN=1 exits without waiting for stdin, including agy', async () => {
     expect(await tracker('agy', 'PreToolUse', '', { AGENT_OFFICE_RUN: '1', AGENT_OFFICE_HOME: home() }, false)).toEqual({ code: 0, out: '', err: '' })
   })
-  it.each([['PreToolUse', '{"decision":"allow"}'], ['PostToolUse', '{}'], ['Stop', '{}']])('agy %s emits only its neutral reply even on bad input', async (event, out) => {
+  it.each([['PreToolUse', '{}'], ['PostToolUse', '{}'], ['Stop', '{}']])('agy %s emits only its neutral reply even on bad input', async (event, out) => {
     expect(await tracker('agy', event, 'bad json', { AGENT_OFFICE_HOME: home() })).toEqual({ code: 0, out, err: '' })
+  })
+  it('never prints a decision or approves a tool, for any CLI, event or input', async () => {
+    const good = JSON.stringify({ conversationId: 'x', session_id: 'x', workspacePaths: ['/tmp/p'], toolCall: { name: 'read' } })
+    for (const cli of ['codex', 'agy', 'opencode', 'qoder']) for (const event of ['PreToolUse', 'PostToolUse', 'PermissionRequest', 'Stop']) for (const input of ['bad json', good]) {
+      const r = await tracker(cli, event, input, { AGENT_OFFICE_HOME: home() })
+      expect(r.out).not.toMatch(/decision|allow/i)
+    }
+  })
+  it('does not wait for a stdin that never closes once a full JSON object has arrived', async () => {
+    const child = spawn(process.execPath, [resolve('hooks/cli-tracker.mjs'), 'agy', 'PreToolUse'], { env: { ...process.env, AGENT_OFFICE_RUN: '', AGENT_OFFICE_HOME: home() }, windowsHide: true })
+    let out = ''; child.stdout.on('data', b => { out += b }); child.stdin.on('error', () => {})
+    const started = Date.now()
+    const code = await new Promise(r => { child.on('close', r); child.stdin.write(JSON.stringify({ conversationId: 'x' })) })
+    const took = Date.now() - started
+    child.stdin.destroy()
+    expect({ code, out }).toEqual({ code: 0, out: '{}' })
+    expect(took).toBeLessThan(1500) // node start-up included; the old behaviour waited 2000+
+  })
+  it('a stdin that never sends anything still ends within the 500 ms cap', async () => {
+    const child = spawn(process.execPath, [resolve('hooks/cli-tracker.mjs'), 'agy', 'PreToolUse'], { env: { ...process.env, AGENT_OFFICE_RUN: '', AGENT_OFFICE_HOME: home() }, windowsHide: true })
+    child.stdin.on('error', () => {})
+    const started = Date.now()
+    const code = await new Promise(r => child.on('close', r))
+    expect(code).toBe(0)
+    expect(Date.now() - started).toBeLessThan(1500)
   })
   it('signs exact bytes and honours all prompt logging levels', async () => {
     const dir = home(); writeFileSync(join(dir, 'auth-token'), 'test-token')

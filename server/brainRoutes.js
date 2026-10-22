@@ -82,7 +82,8 @@ async function overview() {
     effective,
     recommended,
     cooldowns,
-    catalogue: { builtAt: catalogue?.builtAt ?? 0, count: models.length, unsure: models.filter(m => m.confidence < 0.5).length },
+    // outdated: services whose model list could not be refreshed (their last good models are kept)
+    catalogue: { builtAt: catalogue?.builtAt ?? 0, count: models.length, unsure: models.filter(m => m.confidence < 0.5).length, outdated: [...new Set([...models.filter(m => m.stale).map(m => m.service), ...Object.keys(catalogue?.listingErrors ?? {})])] },
   }
 }
 
@@ -91,7 +92,7 @@ export function mountBrains(app, { requireUi }) {
 
   app.get('/brains/catalogue', async (_req, res) => {
     const catalogue = await catalogueNow()
-    res.json({ builtAt: catalogue?.builtAt ?? 0, models: catalogue?.models ?? [] })
+    res.json({ builtAt: catalogue?.builtAt ?? 0, models: catalogue?.models ?? [], listingErrors: catalogue?.listingErrors ?? {} })
   })
 
   app.post('/brains/preview', async (req, res) => {

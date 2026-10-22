@@ -10,9 +10,13 @@ interface Props {
   steps: BrainStep[]
   label: (service: string) => string
   empty?: string
+  /** services whose model list could not be refreshed */
+  outdated?: string[]
 }
 
-export default function BrainChain({ steps, label, empty = 'No model is available for this yet.' }: Props) {
+export const OUTDATED_NOTE = 'model list out of date'
+
+export default function BrainChain({ steps, label, empty = 'No model is available for this yet.', outdated = [] }: Props) {
   if (steps.length === 0) return <p className="org-hint">{empty}</p>
   return (
     <ol className="brain-chain" aria-label="Steps, in the order they are tried">
@@ -21,6 +25,7 @@ export default function BrainChain({ steps, label, empty = 'No model is availabl
           <span className="brain-n">{i + 1}</span>
           <span className="brain-chain-text">
             <strong>{label(s.service)}</strong> · {s.label || s.model || 'default model'}{s.effort ? ` · ${s.effort}` : ''}
+            {outdated.includes(s.service) && <span className="brain-blocked-inline"> · {OUTDATED_NOTE}</span>}
             {s.blocked && <span className="brain-blocked-inline"> · {blockedText(s.blocked)}, {untilText(s.blocked.until)}</span>}
           </span>
         </li>

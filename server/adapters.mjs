@@ -390,13 +390,14 @@ const MODELS_TTL_MS = 5 * 60_000
 const modelCache = new Map()
 
 /** The models a service can run, cached for a few minutes (some CLIs take seconds to answer); [] when it cannot say. */
-export async function listModels(name) {
+export async function listModels(name, { strict = false } = {}) {
   const adapter = adapters[name]
   if (!adapter?.models || !isEnabled(name)) return []
   const hit = modelCache.get(name)
   if (hit && Date.now() - hit.at < MODELS_TTL_MS) return hit.models
-  let models = []
-  try { models = await adapter.models() } catch { /* the CLI cannot list them */ }
+  let models
+  // a failure is never cached (a retry must ask the CLI again); strict lets the catalogue see it
+  try { models = await adapter.models() } catch (e) { if (strict) throw e; return [] }
   modelCache.set(name, { at: Date.now(), models })
   return models
 }

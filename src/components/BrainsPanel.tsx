@@ -11,6 +11,7 @@ import { officeHttpBase } from '../serverUrl'
 import { TIER_LABEL, blockedText, untilText, type Brain, type BrainStep, type BrainsOverview, type CatalogueModel, type Tier } from '../brains'
 import ModelCombo from './ModelCombo'
 import ThemedSelect from './ThemedSelect'
+import { OUTDATED_NOTE } from './BrainChain'
 
 interface Service { name: string; label: string; available: boolean }
 
@@ -100,6 +101,7 @@ export default function BrainsPanel({ overview, services, models, readOnly, sele
   ]
   const installed = services.filter(s => s.available)
   const unsure = overview.catalogue.unsure
+  const outdated = overview.catalogue.outdated ?? []
 
   return (
     <div className="brains">
@@ -149,6 +151,7 @@ export default function BrainsPanel({ overview, services, models, readOnly, sele
               <div className="brain-auto">
                 <strong>{label(s.service)}</strong> · {s.label || s.model || 'default model'}{s.effort ? ` · ${s.effort} reasoning` : ''}
                 {s.why && <div className="org-hint">{s.why}</div>}
+                {outdated.includes(s.service) && <div className="org-hint">{OUTDATED_NOTE}</div>}
               </div>
             ) : (
               <div className="brain-fields">
@@ -160,6 +163,7 @@ export default function BrainsPanel({ overview, services, models, readOnly, sele
                 <ThemedSelect id={`step-${i}-effort`} value={s.effort} disabled={readOnly || effortsFor(s).length === 0}
                   onChange={v => setStep(i, { effort: v })}
                   options={[{ value: '', label: 'Default reasoning' }, ...effortsFor(s).map(e => ({ value: e, label: e }))]} />
+                {outdated.includes(s.service) && <div className="org-hint">{OUTDATED_NOTE}</div>}
               </div>
             )}
             {s.blocked && (

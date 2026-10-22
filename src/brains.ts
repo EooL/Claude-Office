@@ -53,7 +53,7 @@ export interface BrainsOverview {
   effective: Record<string, { id: string; from: string } | null>
   recommended: Record<string, { id: string; why: string }>
   cooldowns: Record<string, Blocked>
-  catalogue: { builtAt: number; count: number; unsure: number }
+  catalogue: { builtAt: number; count: number; unsure: number; outdated?: string[] }
 }
 
 export interface CatalogueModel {

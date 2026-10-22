@@ -24,6 +24,10 @@ Enforced for all five by the tests: chat and plan never carry a write-enabling f
 3. **Claude Code write mode loads the user's hooks, CLAUDE.md and MCP servers** (only chat and plan use `--safe-mode`), so an approved write run is a normal session of the user's setup.
 4. **OpenCode write mode** inherits whatever permissions the user configured; the office adds none.
 
+## Model listings and the catalogue
+
+A model listing (`adapters[name].models()`) that fails, times out (30 s) or returns nothing never removes a service from the brains. `buildCatalogue` retries that service once after the others finished, and if it still fails keeps the models of the previous `catalogue.json` with `stale: true` and records `listingErrors: { <service>: { at, message } }` (cleared by the next good listing). A refresh where every listing failed keeps the whole old catalogue (and its build time, so the next request tries again). A service that was never listed and fails stays absent, with its error recorded. The Brains panel shows "model list out of date" for such a service.
+
 ## Master prompt
 
 Agent prompts for chat, planning and approved work carry three layers in order: **project master prompt, agent job description, task**, separated by `=== PROJECT RULES ===`, `=== YOUR JOB DESCRIPTION ===` and `=== THE TASK ===`. The task can narrow the rules, never widen them. The office loads its current `master-prompt.md` override for each prompt, falling back to the shipped default when the override is invalid or unreadable; project and office variables are rendered for that run. Optional root `AGENTS.md` rules are capped and secret-looking lines are removed before inclusion. Classification remains a separate orchestration prompt.

@@ -80,13 +80,39 @@ export function classifyModel({ service, id, label = '', note = '', billing = 'p
 }
 
 /** Ask every installed and enabled service for its models and classify them. */
-export async function buildCatalogue({ list = listModels, svcs = services() } = {}) {
-  const per = await Promise.all(svcs.filter((s) => s.available && s.enabled !== false).map(async (s) => {
-    const models = await list(s.name)
-    const fallbackEfforts = adapters[s.name]?.efforts ?? []
-    return models.map((m) => classifyModel({ service: s.name, ...m, efforts: m.efforts?.length ? m.efforts : fallbackEfforts }))
-  }))
-  return { builtAt: Date.now(), models: per.flat() }
+const errorText = (e) => String(e?.message ?? e ?? 'listing failed')
+  .replace(/(?:[A-Za-z]:)?[\\/](?:Users|home)[\\/][^\\/\s]+/gi, '~') // no user name in what is kept
+  .replace(/\s+/g, ' ').trim().slice(0, 200)
+
+/**
+ * Ask every installed and enabled service for its models and classify them. A listing that fails or comes back
+ * empty is retried once, after the others finished; if it still fails, the models of the `previous` catalogue
+ * stay, marked `stale: true`, and `listingErrors[service]` says what went wrong (cleared by the next good listing).
+ */
+export async function buildCatalogue({ list = (n) => listModels(n, { strict: true }), svcs = services(), previous = null } = {}) {
+  const active = svcs.filter((s) => s.available && s.enabled !== false)
+  const attempt = async (s) => {
+    try {
+      const models = await list(s.name)
+      if (!Array.isArray(models) || models.length === 0) throw new Error('no models listed')
+      const fallbackEfforts = adapters[s.name]?.efforts ?? []
+      return { models: models.map((m) => classifyModel({ service: s.name, ...m, efforts: m.efforts?.length ? m.efforts : fallbackEfforts })) }
+    } catch (e) { return { error: errorText(e) } }
+  }
+  const results = new Map(await Promise.all(active.map(async (s) => [s.name, await attempt(s)])))
+  for (const s of active) if (results.get(s.name).error) results.set(s.name, await attempt(s)) // once, one at a time
+  const models = []
+  const listingErrors = {}
+  const at = Date.now()
+  for (const s of active) {
+    const r = results.get(s.name)
+    if (!r.error) { models.push(...r.models); continue }
+    listingErrors[s.name] = { at, message: r.error }
+    models.push(...(previous?.models ?? []).filter((m) => m.service === s.name).map((m) => ({ ...m, stale: true })))
+  }
+  const allFailed = active.length > 0 && active.every((s) => results.get(s.name).error)
+  // nothing could be listed: the old build is still the newest good one, so the next request tries again
+  return { builtAt: allFailed && previous?.builtAt ? previous.builtAt : at, models, listingErrors }
 }
 
 // --- kept on disk: listing takes a few seconds per CLI, and every chat reply is its own process
@@ -109,5 +135,5 @@ export function saveCatalogue(catalogue) {
 
 /** Build and keep a fresh one. */
 export async function refreshCatalogue(opts) {
-  return saveCatalogue(await buildCatalogue(opts))
+  return saveCatalogue(await buildCatalogue({ previous: loadCatalogue({ maxAgeMs: Infinity }), ...opts }))
 }

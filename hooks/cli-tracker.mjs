@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // Terminal-only telemetry. No permission answering, transcript reading or tool arguments.
-import { readFileSync, realpathSync } from 'node:fs'
+import { realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHmac } from 'node:crypto'
+import { readRegularFile } from '../server/project-files.mjs'
 
 const short = (v, n = 200) => typeof v === 'string' ? v.slice(0, n) : undefined
 
@@ -53,18 +54,22 @@ export function normalizeEvent(cli, event, payload) {
 
 export async function sendEvent(event, { env = process.env, fetchImpl = globalThis.fetch } = {}) {
   if (!event || env.AGENT_OFFICE_RUN === '1') return
+  let url
+  try {
+    url = new URL(env.AGENT_OFFICE_EVENT_URL || `http://127.0.0.1:${env.AGENT_OFFICE_PORT || 3334}/event`)
+    if (url.protocol !== 'http:' || !['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname) || url.username || url.password || url.pathname !== '/event' || url.search || url.hash) return
+  } catch { return }
   const home = env.AGENT_OFFICE_HOME || join(env.HOME || homedir(), '.agent-office')
   let token
-  try { token = readFileSync(join(home, 'auth-token'), 'utf8').trim() } catch { return }
+  try { token = readRegularFile(join(home, 'auth-token'), 4096).toString('utf8').trim() } catch { return }
   if (!token) return
   // Same logging levels as the server. Read only; never log prompt/reply text.
   let level = 'summary'
-  try { level = JSON.parse(readFileSync(join(home, 'settings.json'), 'utf8')).logPrompts ?? level } catch {}
+  try { level = JSON.parse(readRegularFile(join(home, 'settings.json'), 1024 * 1024).toString('utf8')).logPrompts ?? level } catch {}
   const body = JSON.stringify({ ...event, ...(event.text !== undefined ? { text: level === 'off' ? undefined : event.text.slice(0, level === 'full' ? 2000 : 200) } : {}) })
-  const url = new URL(env.AGENT_OFFICE_EVENT_URL || `http://127.0.0.1:${env.AGENT_OFFICE_PORT || 3334}/event`)
   const timestamp = String(Date.now())
   const signature = createHmac('sha256', token).update(`POST\n${url.pathname}${url.search}\n${timestamp}\n${body}`).digest('hex')
-  try { await fetchImpl(url, { method: 'POST', body, headers: { 'Content-Type': 'application/json', 'X-Office-Timestamp': timestamp, 'X-Office-Signature': signature }, signal: AbortSignal.timeout(1800) }) } catch {}
+  try { await fetchImpl(url, { method: 'POST', body, redirect: 'error', headers: { 'Content-Type': 'application/json', 'X-Office-Timestamp': timestamp, 'X-Office-Signature': signature }, signal: AbortSignal.timeout(1800) }) } catch {}
 }
 
 async function main() {

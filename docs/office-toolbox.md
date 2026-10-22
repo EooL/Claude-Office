@@ -17,15 +17,19 @@ All results are text, capped at 60,000 characters with a "truncated" note. Failu
 | `git_show` | `rev`, `path` | `--stat --patch`. |
 | `git_diff` | `base`, `head`, `path`, `stat_only` | Default: working tree vs HEAD. |
 
-`rev`/`base`/`head` must match `/^[A-Za-z0-9._\/~^@{}-]{1,100}$/` and not start with `-`. Git runs with `GIT_TERMINAL_PROMPT=0`, no pager, `core.fsmonitor=false`, no external diff or textconv. Secret-looking files are excluded from git show/diff output by pathspec.
+`rev`/`base`/`head` must match `/^[A-Za-z0-9._\/~^@{}-]{1,100}$/`, not start with `-`, and resolve to a commit. Raw blob/tree IDs and `rev:path` are refused. Git strips inherited `GIT_*` overrides, suppresses system/global configuration, fixes its repository and worktree, and disables fsmonitor, pager, signature verification, external diff and textconv. Secret-looking files are excluded from git show/diff output by case-insensitive pathspecs. Linked worktrees (`.git` files), redirected Git directories and bare repositories are refused by Git tools; file listing/search falls back to a bounded walk.
 
 ## Jail and secret filter
 
 Every path is resolved against the root, `realpath`ed, and refused unless it stays inside the real root (so `..`, absolute paths elsewhere and symlink/junction escapes fail). `.git` and `node_modules` are never touched directly. Refused as secret-looking: names `.env*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa*`, `id_ed25519*`, `auth-token`, `credentials*`, `.npmrc`, any name containing "secret", and any `.ssh`/`.gnupg`/`.aws` segment. They are not listed, read or searched.
 
+The policy is case-insensitive and also excludes `.git-credentials`, `.netrc`, `.pypirc` and `*.kdbx`. Windows ADS, short-name syntax, drive-relative/UNC/device paths, reserved device names and trailing dots/spaces are refused. Reads use bounded regular-file descriptors and revalidate canonical paths and file identity; this is not an OS sandbox or a proof against every concurrent parent-directory replacement. Secrets in innocently named file contents are outside this name-based filter's scope. The same policy protects agy prompt context.
+
+Search patterns and globs both run inside the killable worker. Walks bound visited entries and depth. JSON-RPC input has a 256 Ki-character decoded-line limit and nesting limit of 64; input and output use backpressure.
+
 ## Audit log
 
-If `OFFICE_TOOLS_LOG` is set, each call appends `{t, tool, ok, ms, args}` (path/pattern/rev only, never file contents). Unset means nothing is logged.
+If `OFFICE_TOOLS_LOG` is set, each call appends `{t, tool, ok, ms, args}` (path/pattern/revision fields only, never file contents). Summaries redact secret-looking values and strip controls. Logs rotate at 1 MiB, refuse linked/nonregular files and preexisting files above 2 MiB, and do not promise transactional rotation across concurrent writers. Unset means nothing is logged.
 
 ## Registering it (by a human)
 

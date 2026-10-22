@@ -52,58 +52,54 @@
 // Everything else (scripts/office-run.mjs, scripts/chat-backend.mjs, the chat watcher, the
 // settings screen) picks the new CLI up by name.
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, opendirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { defaultModelFor, hasFullAccess, isEnabled } from './settings.mjs'
 import { classifyFailure } from './availability.mjs'
+import { projectPath, readProjectFile, safeGitArgs, safeGitEnv } from './project-files.mjs'
 
 const AGY_LIMITS = Object.freeze({ maxList: 400, maxFiles: 12, maxFileChars: 40_000, maxTotalChars: 150_000, maxWalk: 5000, maxWalkFileBytes: 1_000_000 })
 const WALK_SKIP = /^(node_modules|dist|build|coverage)$/
 const BINARY_EXT = /\.(png|jpe?g|gif|webp|ico|bmp|pdf|zip|gz|tgz|7z|rar|exe|dll|so|dylib|bin|woff2?|ttf|otf|eot|mp[34]|mov|avi|wav|db|sqlite|class|jar|lock)$/i
-const SECRET_NAME = /^(\.env.*|.*\.pem|.*\.key|id_rsa.*|id_ed25519.*|auth-token|credentials.*|.*\.p12|.*\.pfx|.*secret.*|\.npmrc)$/i
 const NAMED_TOKEN = /[\w@.\-\\/:~]+/g
 const NAMED_EXT = /\.(mjs|js|ts|tsx|jsx|json|md|css|html|py|sh)$/i
 
 /** Tracked files from git (the office asks, not the CLI), else a bounded walk. Forward slashes; [] when nothing. */
 function agyFileList(cwd, limits) {
   try {
-    const out = execFileSync('git', ['ls-files'], { cwd, timeout: 5000, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
-    const files = out.split('\n').map((l) => l.trim().replace(/\\/g, '/')).filter(Boolean)
+    const root = realpathSync(cwd)
+    const out = execFileSync('git', [...safeGitArgs(root), 'ls-files', '-z'], { env: safeGitEnv(), cwd, timeout: 5000, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
+    const files = out.split('\0').filter(Boolean).slice(0, limits.maxWalk).filter(f => { try { projectPath(root, f); return true } catch { return false } })
     if (files.length) return files
   } catch { /* not a git repository, or git is missing */ }
   const files = []
-  const walk = (rel) => {
-    let entries
-    try { entries = readdirSync(join(cwd, rel), { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1)) } catch { return }
-    for (const e of entries) {
-      if (files.length >= limits.maxWalk) return
+  let visited = 0
+  const walk = (rel, depth = 0) => {
+    if (depth > 50) return
+    let entries, e
+    try { entries = opendirSync(join(cwd, rel)) } catch { return }
+    try { while ((e = entries.readSync())) {
+      if (++visited > limits.maxWalk) return
       const path = rel ? `${rel}/${e.name}` : e.name
       if (e.isDirectory()) {
-        if (!e.name.startsWith('.') && !WALK_SKIP.test(e.name)) walk(path)
+        if (!e.name.startsWith('.') && !WALK_SKIP.test(e.name)) walk(path, depth + 1)
       } else if (e.isFile() && !BINARY_EXT.test(e.name)) {
-        try { if (statSync(join(cwd, path)).size <= limits.maxWalkFileBytes) files.push(path) } catch { /* vanished */ }
+        try { projectPath(realpathSync(cwd), path); if (statSync(join(cwd, path)).size <= limits.maxWalkFileBytes) files.push(path) } catch { /* vanished or refused */ }
       }
-    }
+    } } finally { entries.closeSync() }
   }
   walk('')
-  return files
+  return files.sort()
 }
 
 /** The text of a file the prompt names, if it is a plain, non-secret file inside cwd; else null. */
 function agyNamedFile(cwd, root, token) {
-  const full = resolve(cwd, token)
-  let real
-  try { real = realpathSync(full) } catch { return null }
-  const rel = relative(root, real)
-  if (!rel || rel.startsWith('..') || isAbsolute(rel)) return null
-  const parts = rel.split(sep)
-  if (parts.includes('.git') || parts.some((p) => SECRET_NAME.test(p)) || BINARY_EXT.test(real)) return null
-  if (basename(token) && SECRET_NAME.test(basename(token))) return null
   try {
-    if (!statSync(real).isFile() || statSync(real).size > 5_000_000) return null
-    const text = readFileSync(real, 'utf8')
-    return text.includes('\0') ? null : { rel: parts.join('/'), text }
+    const f = readProjectFile(root, token, 5_000_000)
+    if (BINARY_EXT.test(f.abs)) return null
+    const text = f.buf.toString('utf8')
+    return text.includes('\0') ? null : { rel: f.rel, text }
   } catch { return null }
 }
 
@@ -313,11 +309,16 @@ export const adapters = {
     refusedCommand: ({ since, env }) => {
       try {
         const root = env?.AGENT_OFFICE_AGY_CONVERSATIONS || join(homedir(), '.gemini', 'antigravity-cli', 'conversations')
-        const newest = readdirSync(root).filter((n) => n.endsWith('.db')).map((n) => ({ p: join(root, n), t: statSync(join(root, n)).mtimeMs }))
-          .filter((f) => f.t >= since).sort((a, b) => b.t - a.t)[0]
-        if (!newest) return ''
+        const entries = opendirSync(root)
+        let newest, entry, visited = 0
+        try { while (++visited <= 2000 && (entry = entries.readSync())) {
+          if (!entry.isFile() || !entry.name.endsWith('.db')) continue
+          const p = join(root, entry.name), t = statSync(p).mtimeMs
+          if (t >= since && (!newest || t > newest.t)) newest = { p, t }
+        } } finally { entries.closeSync() }
+        if (!newest || !statSync(newest.p).isFile() || statSync(newest.p).size > 8 * 1024 * 1024) return ''
         let last = ''
-        for (const m of readFileSync(newest.p, 'latin1').matchAll(/"CommandLine":"((?:[^"\\]|\\.)*)"/g)) last = m[1]
+        for (const m of readProjectFile(realpathSync(root), basename(newest.p), 8 * 1024 * 1024).buf.toString('latin1').matchAll(/"CommandLine":"((?:[^"\\]|\\.)*)"/g)) last = m[1]
         return last.replace(/\\(["\\])/g, '$1').slice(0, 200)
       } catch { return '' }
     },

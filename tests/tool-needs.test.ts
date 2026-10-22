@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
@@ -14,6 +14,42 @@ const dir = (n: string) => mkdtempSync(join(home, n))
 const base = { service: 'agy', mode: 'plan', kind: 'permission', message: 'a tool required the command permission' }
 
 describe('tool needs log', () => {
+  it('hardening: redaction work is bounded for huge hostile key-like strings', () => {
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', "import {cleanToolText} from './server/tool-needs.mjs'; console.log(cleanToolText('a-'.repeat(50000), 200).length)"], { encoding: 'utf8', windowsHide: true, timeout: 2500 })
+    expect(result.error).toBeUndefined()
+    expect(result.status).toBe(0)
+    expect(result.stdout.trim()).toBe('200')
+  })
+  it('hardening: quoted secrets, case variants and terminal controls are redacted on write and read', () => {
+    const h = dir('hostile-log')
+    const command = 'token="two words" SK-ABCDEFGHIJK password=abc\u001b[31m'
+    t.recordToolNeed(h, { ...base, command })
+    expect(readFileSync(join(h, 'tool-needs.jsonl'), 'utf8')).not.toMatch(/two words|ABCDEFGHIJK|password=abc|\\u001b/)
+    appendFileSync(join(h, 'tool-needs.jsonl'), JSON.stringify({ ...base, command }) + '\n')
+    expect(JSON.stringify(t.readToolNeeds(h))).not.toMatch(/two words|ABCDEFGHIJK|password=abc|\\u001b/)
+  })
+
+  it('hardening: refuses oversized existing logs without loading them', () => {
+    const h = dir('oversized-log')
+    writeFileSync(join(h, 'tool-needs.jsonl'), 'x'.repeat(t.MAX_BYTES * 3))
+    expect(t.recordToolNeed(h, base)).toBe(false)
+    expect(t.readToolNeeds(h)).toEqual([])
+    expect(statSync(join(h, 'tool-needs.jsonl')).size).toBe(t.MAX_BYTES * 3)
+  })
+
+  it('hardening: refuses log symlinks and conversation junction escapes', () => {
+    const h = dir('log-link'), outside = dir('log-target'), file = join(outside, 'data')
+    writeFileSync(file, 'owner bytes')
+    try { symlinkSync(file, join(h, 'tool-needs.jsonl'), 'file') } catch (e: any) {
+      if (['EPERM', 'EACCES'].includes(e.code)) return
+      throw e
+    }
+    expect(t.recordToolNeed(h, base)).toBe(false)
+    expect(readFileSync(file, 'utf8')).toBe('owner bytes')
+    writeFileSync(file, '"CommandLine":"OUTSIDE_MARKER"')
+    symlinkSync(file, join(h, 'conversation.db'), 'file')
+    expect((adapters as any).agy.refusedCommand({ since: 0, env: { AGENT_OFFICE_AGY_CONVERSATIONS: h } })).toBe('')
+  })
   it('round-trips, creates the file 0600 and skips corrupt lines', () => {
     const h = dir('rt')
     expect(t.recordToolNeed(h, { ...base, command: 'git grep "GOAL:"', task: 'x' })).toBe(true)
@@ -87,6 +123,18 @@ describe('tool needs log', () => {
 
 describe('agy refusedCommand hook', () => {
   const hook = (adapters as any).agy.refusedCommand
+  it('hardening: bounds conversation reads and refuses symlinked databases', () => {
+    const c = dir('bounded-conv'), outside = dir('outside-conv')
+    writeFileSync(join(c, 'huge.db'), '"CommandLine":"PRIVATE_MARKER"' + 'x'.repeat(9 * 1024 * 1024))
+    expect(hook({ since: 0, env: { AGENT_OFFICE_AGY_CONVERSATIONS: c } })).toBe('')
+    rmSync(join(c, 'huge.db'))
+    writeFileSync(join(outside, 'data'), '"CommandLine":"OUTSIDE_MARKER"')
+    try { symlinkSync(join(outside, 'data'), join(c, 'link.db'), 'file') } catch (e: any) {
+      if (['EPERM', 'EACCES'].includes(e.code)) { console.warn('SKIPPED database symlink:', e.code); return }
+      throw e
+    }
+    expect(hook({ since: 0, env: { AGENT_OFFICE_AGY_CONVERSATIONS: c } })).toBe('')
+  })
   it('takes the last CommandLine of the newest conversation, unescaped and capped', () => {
     const c = dir('conv')
     writeFileSync(join(c, 'old.db'), Buffer.from('"CommandLine":"old"'))

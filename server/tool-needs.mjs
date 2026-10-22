@@ -4,23 +4,30 @@
 // leave no trace of WHICH command was wanted. Each one is now a line in <home>/tool-needs.jsonl; summariseToolNeeds
 // maps the commands to the Office toolbox (scripts/office-tools-mcp.mjs). Nothing here adds a tool or a permission:
 // a person reads the report and decides. Pure functions: the office home is always a parameter.
-import { appendFileSync, chmodSync, readFileSync, writeFileSync } from 'node:fs'
+import { lstatSync } from 'node:fs'
 import { join } from 'node:path'
+import { readRegularFile, appendBoundedLog } from './project-files.mjs'
 
 export const MAX_BYTES = 1024 * 1024
 const file = (home) => join(home, 'tool-needs.jsonl')
 
 const SECRET = [
-  /\bBearer\s+[A-Za-z0-9._~+/=-]{6,}/gi,
-  /\b(?:sk|pk|ghp|gho|xox[bp]|AKIA)[-_]?[A-Za-z0-9_-]{8,}/g,
-  /\b(api[_-]?key|token|passw(?:or)?d|secret|credential)\s*[:=]\s*\S+/gi,
+  /\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{6,}/gi,
+  /\b(?:sk|pk|ghp|gho|xox[bp]|AKIA)[-_]?[A-Za-z0-9_-]{8,}/gi,
+  /["']?\b([A-Za-z0-9_-]{0,80}(?:api[_-]?key|token|password|passwd|pwd|secret|credential|access[_-]?key|private[_-]?key)[A-Za-z0-9_-]{0,80})\b["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|\S+)/gi,
 ]
 /** User paths become `~`, secret-looking strings become [redacted], then the text is cut to `max`. */
-function clean(text, max) {
-  let t = String(text ?? '').replace(/\s+/g, ' ').trim()
+export function cleanToolText(text, max) {
+  // Keep enough lookahead to redact values crossing the display boundary, without unbounded regex work.
+  let t = String(text ?? '').slice(0, max + 4096).replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').replace(/\s+/g, ' ').trim()
   t = t.replace(/(?:[A-Za-z]:)?[\\/](?:Users|home)[\\/][^\\/\s"']+/gi, '~')
   for (const re of SECRET) t = t.replace(re, (m, key) => (typeof key === 'string' ? `${key}=[redacted]` : '[redacted]'))
   return t.slice(0, max)
+}
+const clean = cleanToolText
+
+function regularLog(path) {
+  try { const st = lstatSync(path); return st.isFile() && st.size <= MAX_BYTES * 2 } catch (e) { return e.code === 'ENOENT' }
 }
 
 /** Append one need. Never throws; false when it could not be written. */
@@ -28,18 +35,12 @@ export function recordToolNeed(home, { service, mode, kind, message, command, ta
   try {
     if (!home || !service) return false
     const path = file(home)
+    if (!regularLog(path)) return false
     const line = JSON.stringify({
       at: new Date().toISOString(), service: clean(service, 40), mode: clean(mode || 'chat', 20), kind: clean(kind || 'permission', 20),
       message: clean(message, 240), command: clean(command, 200), task: clean(task, 120),
     }) + '\n'
-    appendFileSync(path, line, { flag: 'a', mode: 0o600 })
-    try { chmodSync(path, 0o600) } catch { /* not supported on every platform */ }
-    // shortcut: the size is read after the append, so the file may briefly pass 1 MB; fine for a log
-    const raw = readFileSync(path, 'utf8')
-    if (Buffer.byteLength(raw) > MAX_BYTES) {
-      const lines = raw.split('\n').filter(Boolean)
-      writeFileSync(path, lines.slice(Math.floor(lines.length / 2)).join('\n') + '\n', { mode: 0o600 })
-    }
+    appendBoundedLog(path, line, MAX_BYTES)
     return true
   } catch { return false }
 }
@@ -47,11 +48,15 @@ export function recordToolNeed(home, { service, mode, kind, message, command, ta
 /** The newest `limit` entries, oldest first; corrupt lines are skipped. */
 export function readToolNeeds(home, { limit = 500 } = {}) {
   try {
+    if (!regularLog(file(home))) return []
     const out = []
-    for (const l of readFileSync(file(home), 'utf8').split('\n')) {
-      try { const e = JSON.parse(l); if (e && typeof e === 'object' && e.service) out.push(e) } catch { /* corrupt line */ }
+    for (const l of readRegularFile(file(home), MAX_BYTES * 2).toString('utf8').split('\n')) {
+      try {
+        const e = JSON.parse(l)
+        if (e && typeof e === 'object' && typeof e.service === 'string') out.push(Object.fromEntries(['at', 'service', 'mode', 'kind', 'message', 'command', 'task'].map(k => [k, clean(e[k], k === 'message' ? 240 : 200)])))
+      } catch { /* corrupt line */ }
     }
-    return out.slice(-limit)
+    return out.slice(-Math.min(5000, Math.max(1, Number.isFinite(limit) ? Math.trunc(limit) : 500)))
   } catch { return [] }
 }
 

@@ -2,6 +2,7 @@ import { execFileSync, spawn, spawnSync, type ChildProcessWithoutNullStreams } f
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { afterAll, describe, expect, it } from 'vitest'
 
 const SCRIPT = resolve('scripts/office-tools-mcp.mjs')
@@ -57,6 +58,134 @@ const open = (root: string, env?: Record<string, string>) => { const c = new Cli
 afterAll(() => clients.forEach(c => c.close()))
 
 describe('office tools MCP', () => {
+  it('hardening: search rechecks git-listed junctions and secret aliases', async () => {
+    const d = mk('hostile-search'), outside = mk('hostile-outside')
+    git(d, 'init', '-q')
+    put(d, 'linked/x.txt', 'placeholder')
+    git(d, 'add', 'linked/x.txt')
+    rmSync(join(d, 'linked'), { recursive: true })
+    put(outside, 'x.txt', 'OUTSIDE_MARKER')
+    try { symlinkSync(outside, join(d, 'linked'), 'junction') } catch (e: any) {
+      if (['EPERM', 'EACCES'].includes(e.code)) return
+      throw e
+    }
+    expect((await open(d).call('search_text', { pattern: 'OUTSIDE_MARKER' })).text).not.toContain('OUTSIDE_MARKER')
+  })
+
+  it('hardening: secret policy applies to reads, search and case-insensitive git history', async () => {
+    const d = mk('secret-variants'); git(d, 'init', '-q')
+    const names = ['.ENV.local', '.env~', 'credentials.json', '.git-credentials', '.netrc', '.pypirc', 'vault.kdbx', '.AWS/credentials', '.SSH/config']
+    for (const name of names) put(d, name, 'PRIVATE_MARKER')
+    git(d, 'add', '-f', '.'); git(d, 'commit', '-qm', 'secrets fixture')
+    const sc = open(d)
+    for (const path of names) expect((await sc.call('read_file_range', { path })).err, path).toBe(true)
+    expect((await sc.call('search_text', { pattern: 'PRIVATE_MARKER' })).text).not.toContain('PRIVATE_MARKER')
+    expect((await sc.call('git_show', { rev: 'HEAD' })).text).not.toContain('PRIVATE_MARKER')
+  })
+
+  it('hardening: git show accepts commits only, never secret blobs or trees', async () => {
+    const d = mk('git-objects'); git(d, 'init', '-q')
+    put(d, '.env', 'BLOB_SECRET_MARKER'); git(d, 'add', '-f', '.env'); git(d, 'commit', '-qm', 'fixture')
+    const blob = git(d, 'rev-parse', 'HEAD:.env').trim(), gc = open(d)
+    for (const rev of [blob, 'HEAD^{tree}']) {
+      const result = await gc.call('git_show', { rev })
+      expect(result.err, rev).toBe(true)
+      expect(result.text).not.toContain('BLOB_SECRET_MARKER')
+    }
+    expect((await gc.call('git_show', { rev: 'HEAD' })).err).toBe(false)
+  })
+
+  it('hardening: rejects native alternate data streams', async () => {
+    if (process.platform !== 'win32') return
+    const d = mk('native-ads'); put(d, 'public.txt', 'public'); put(d, 'public.txt:private', 'STREAM_MARKER')
+    expect((await open(d).call('read_file_range', { path: 'public.txt:private' })).err).toBe(true)
+  })
+
+  it('hardening: rejects a file swapped for an outside link between check and open', async () => {
+    const d = mk('race-root'), outside = mk('race-outside')
+    put(d, 'public.txt', 'public'); put(outside, 'private.txt', 'RACE_SECRET_MARKER')
+    // Verify symlink capability without silently losing the race coverage.
+    try { symlinkSync(join(outside, 'private.txt'), join(d, 'probe'), 'file'); rmSync(join(d, 'probe')) } catch (e: any) {
+      if (['EPERM', 'EACCES'].includes(e.code)) { console.warn('SKIPPED file-symlink race:', e.code); return }
+      throw e
+    }
+    const preload = join(tmp, 'race-preload.mjs')
+    writeFileSync(preload, `import fs from 'node:fs'; import {syncBuiltinESMExports} from 'node:module';
+const target=process.env.RACE_FILE; let switched=false;
+const swap=p=>{if(String(p)===target&&!switched){switched=true;fs.unlinkSync(target);fs.symlinkSync(process.env.RACE_OUTSIDE,target,'file')}};
+for(const name of ['readFileSync','openSync']){const original=fs[name];fs[name]=function(p,...args){swap(p);return original.call(this,p,...args)}}
+syncBuiltinESMExports();`)
+    const rc = open(d, { NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`, RACE_FILE: join(d, 'public.txt'), RACE_OUTSIDE: join(outside, 'private.txt') })
+    const result = await rc.call('read_file_range', { path: 'public.txt' })
+    expect(result.err).toBe(true)
+    expect(result.text).not.toContain('RACE_SECRET_MARKER')
+  })
+
+  it('hardening: rejects Windows ambiguous path syntax even on other hosts', async () => {
+    for (const path of ['C:foo', '\\\\?\\C:\\file', '\\\\server\\share', 'ok.txt:stream', 'NUL', 'COM1.txt', 'ok.txt.', 'ok.txt ', '.GIT/config', 'NODE_MODULES/x']) {
+      expect((await open(mk('ambiguous-' + clients.length)).call('read_file_range', { path })).err, path).toBe(true)
+    }
+  })
+
+  it('hardening: ignores inherited Git repository/config redirection', async () => {
+    const d = mk('safe-git'), outside = mk('git-redirect')
+    for (const dir of [d, outside]) { git(dir, 'init', '-q'); put(dir, 'x.txt', dir === d ? 'SAFE_MARKER' : 'OUTSIDE_MARKER'); git(dir, 'add', '.'); git(dir, 'commit', '-qm', 'fixture') }
+    const gc = open(d, { GIT_DIR: join(outside, '.git'), GIT_WORK_TREE: outside })
+    expect((await gc.call('git_show', { rev: 'HEAD' })).text).not.toContain('OUTSIDE_MARKER')
+    expect((await gc.call('git_show', { rev: 'HEAD' })).text).toContain('SAFE_MARKER')
+  })
+
+  it('hardening: bounded JSON lines/depth, invalid IDs and prototype arguments leave RPC alive', async () => {
+    const pc = open(mk('rpc-bounds'))
+    expect((await pc.raw('x'.repeat(270000), null)).error.message).toContain('too large')
+    expect((await pc.raw('{"id":9,"method":"ping","params":' + '['.repeat(100) + '0' + ']'.repeat(100) + '}', null)).error.message).toContain('nesting')
+    expect((await pc.raw('{"id":{},"method":"ping"}', null)).error.code).toBe(-32600)
+    expect((await pc.raw('{"id":10,"method":"tools/call","params":{"name":"__proto__","arguments":{"__proto__":{"polluted":true}}}}', 10)).result.isError).toBe(true)
+    expect((await pc.rpc('ping')).result).toEqual({})
+    expect(({} as any).polluted).toBeUndefined()
+  })
+
+  it('prototype-looking tool names/arguments and invalid requests never pollute or crash RPC', async () => {
+    const pc = open(mk('rpc-prototype'))
+    expect((await pc.raw('{"id":10,"method":"tools/call","params":{"name":"__proto__","arguments":{"__proto__":{"polluted":true}}}}', 10)).result.isError).toBe(true)
+    for (const raw of ['null', '[]', '42']) expect((await pc.raw(raw, null)).error.code).toBe(-32600)
+    expect(({} as any).polluted).toBeUndefined()
+    expect((await pc.rpc('ping')).result).toEqual({})
+  })
+
+  it('hardening: audit redacts secrets and controls before writing one JSON line', async () => {
+    const log = join(tmp, 'hostile-audit.jsonl'), ac = open(mk('audit-root'), { OFFICE_TOOLS_LOG: log })
+    await ac.call('search_text', { pattern: 'token="two words"\n\u001b[31m SK-ABCDEFGHIJK' })
+    const raw = readFileSync(log, 'utf8')
+    expect(raw.trim().split('\n')).toHaveLength(1)
+    expect(raw).not.toMatch(/two words|ABCDEFGHIJK|\\u001b/)
+  })
+
+  it('hardening: blocks config-driven fsmonitor, pager, diff and textconv execution', async () => {
+    const d = mk('git-programs'), marker = join(d, 'EXECUTED')
+    git(d, 'init', '-q'); put(d, 'a.txt', 'before'); git(d, 'add', '.'); git(d, 'commit', '-qm', 'fixture'); put(d, 'a.txt', 'after')
+    const command = `echo EXECUTED > '${marker.replaceAll('\\', '/')}'`
+    for (const key of ['core.fsmonitor', 'core.pager', 'diff.external', 'diff.evil.textconv', 'core.sshCommand']) git(d, 'config', key, command)
+    put(d, '.gitattributes', '*.txt diff=evil\n')
+    const gc = open(d)
+    for (const [name, args] of [['list_files', {}], ['git_log', {}], ['git_show', { rev: 'HEAD' }], ['git_diff', {}]] as const) expect((await gc.call(name, args)).err).toBe(false)
+    expect(existsSync(marker)).toBe(false)
+  })
+
+  it('hardening: pathological glob matching is covered by the worker deadline', async () => {
+    const d = mk('glob-patho'); put(d, 'a'.repeat(100) + '.txt', 'needle')
+    const started = Date.now()
+    const result = await open(d).call('search_text', { pattern: 'needle', glob: '*a'.repeat(30) + 'b' })
+    expect(Date.now() - started).toBeLessThan(8000)
+    expect(result.text).toContain('stopped early')
+  }, 12000)
+
+  it('hardening: uppercase secret history is excluded without relying on read policy', async () => {
+    const d = mk('history-case'); git(d, 'init', '-q')
+    for (const path of ['.ENV.local', '.AWS/config', '.SSH/config', 'VAULT.KDBX']) put(d, path, 'CASE_SECRET_MARKER')
+    git(d, 'add', '-f', '.'); git(d, 'commit', '-qm', 'fixture')
+    expect((await open(d).call('git_show', { rev: 'HEAD' })).text).not.toContain('CASE_SECRET_MARKER')
+  })
   const g = mk('repo')
   git(g, 'init', '-q')
   put(g, 'src/a.ts', 'const needle = 1\nline2\n')
@@ -184,7 +313,7 @@ describe('office tools MCP', () => {
     expect(diff.text).toContain('+const needle = 2')
     expect((await c.call('git_diff', { stat_only: true })).text).toContain('src/a.ts')
     expect((await c.call('git_diff', { base: 'HEAD', head: 'HEAD' })).text).toContain('no differences')
-    for (const rev of ['--output=x', '-p', 'HEAD; rm -rf x', 'HEAD\n--output=y', '']) {
+    for (const rev of ['--output=x', '-p', 'HEAD; rm -rf x', 'HEAD\n--output=y', 'HEAD:.env', 'HEAD:../outside', '']) {
       expect((await c.call('git_show', { rev })).err, rev).toBe(true)
       expect((await c.call('git_diff', { base: rev || '-', head: 'HEAD' })).err).toBe(true)
     }

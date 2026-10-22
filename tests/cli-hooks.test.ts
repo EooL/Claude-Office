@@ -54,6 +54,24 @@ describe('CLI payload normalization (synthetic documented/inferred shapes)', () 
   })
 })
 describe('silent bounded tracker process', () => {
+  it('hardening: oversized token/settings files never become unbounded hook reads', async () => {
+    const dir = home(); writeFileSync(join(dir, 'auth-token'), 'x'.repeat(5000))
+    let calls = 0
+    await sendEvent({ type: 'session_started' }, { env: { AGENT_OFFICE_HOME: dir, AGENT_OFFICE_EVENT_URL: 'http://127.0.0.1:1/event' }, fetchImpl: async () => { calls++ } })
+    expect(calls).toBe(0)
+  })
+  it('hardening: refuses remote destinations and disables redirects', async () => {
+    const dir = home(); writeFileSync(join(dir, 'auth-token'), 'fake-token')
+    let calls = 0, captured: any
+    const fetchImpl = async (_url: unknown, options: any) => { calls++; captured = options }
+    for (const url of ['https://example.invalid/event', 'http://example.invalid/event', 'http://127.0.0.1:1/other', 'not a URL']) {
+      await sendEvent({ type: 'session_prompt', text: 'PRIVATE_MARKER' }, { env: { AGENT_OFFICE_HOME: dir, AGENT_OFFICE_EVENT_URL: url }, fetchImpl })
+    }
+    expect(calls).toBe(0)
+    await sendEvent({ type: 'session_prompt' }, { env: { AGENT_OFFICE_HOME: dir, AGENT_OFFICE_EVENT_URL: 'http://127.0.0.1:1/event' }, fetchImpl })
+    expect(calls).toBe(1)
+    expect(captured.redirect).toBe('error')
+  })
   it('posts signed lifecycle events to the real disposable office without changing its routes', async () => {
     const office = await loadOffice()
     const port = await listen(office.server.httpServer)

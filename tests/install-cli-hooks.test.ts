@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { renameSync } from 'node:fs'
+import { renameSync, symlinkSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { CLIS, prepareInstall, applyInstall, configPath, hooksInstalled, hookHandler, runInstaller, CODEX_TRUST, pluginSource } from '../scripts/install-cli-hooks.mjs'
 import { checkCliHooks } from '../scripts/doctor.mjs'
@@ -12,6 +12,36 @@ afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: tru
 function home() { const d = mkdtempSync(join(tmpdir(), 'office-cli-install-')); dirs.push(d); return d }
 function put(path: string, value: unknown) { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, JSON.stringify(value)) }
 describe('explicit CLI hook installer', () => {
+  it('hardening: refuses junctions in a config path before reading or writing', () => {
+    const dir = home(), outside = home()
+    put(join(outside, 'hooks.json'), { owner: true })
+    try { symlinkSync(outside, join(dir, '.codex'), 'junction') } catch (e: any) {
+      if (['EPERM', 'EACCES'].includes(e.code)) return
+      throw e
+    }
+    expect(() => prepareInstall('codex', { home: dir })).toThrow(/link|junction/i)
+    expect(readdirSync(outside)).toEqual(['hooks.json'])
+  })
+
+  it('hardening: does not mistake an owner command mentioning the tracker for our handler', () => {
+    const dir = home(), file = configPath('codex', dir)
+    const owner = { hooks: { Stop: [{ hooks: [{ command: 'echo D:/other/hooks/cli-tracker.mjs' }] }] } }
+    put(file, owner)
+    expect(prepareInstall('codex', { home: dir, uninstall: true }).changed).toBe(false)
+  })
+
+  it('hardening: rejects shell metacharacters in string hook commands', () => {
+    for (const char of ['&', '^', '%', '!', '\u0000']) expect(() => hookHandler('codex', 'Stop', `C:/Office${char}/hooks/cli-tracker.mjs`)).toThrow('unsupported')
+  })
+
+  it('hardening: Windows delayed expansion changes a bang-containing tracker path', () => {
+    if (process.platform !== 'win32') return
+    const env = { ...process.env, OFFICE_TEST_PATH: 'expanded' }
+    const result = spawnSync('cmd.exe', ['/d', '/v:on', '/c', 'echo node "C:/Office!OFFICE_TEST_PATH!/hooks/cli-tracker.mjs" codex Stop'], { encoding: 'utf8', env, windowsHide: true })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('Officeexpanded/hooks')
+    expect(() => hookHandler('codex', 'Stop', 'C:/Office!OFFICE_TEST_PATH!/hooks/cli-tracker.mjs')).toThrow('unsupported')
+  })
   it('default and --print/--dry-run never create anything', () => {
     const dir = home(); const lines: string[] = []
     runInstaller(['all', '--home', dir, '--print'], line => lines.push(line))

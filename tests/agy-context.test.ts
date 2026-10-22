@@ -29,6 +29,22 @@ const put = (dir: string, rel: string, text = 'x\n') => {
 }
 
 describe('agyContext: the file list', () => {
+  it('hardening: does not execute a repository fsmonitor or inherit another Git directory', () => {
+    const d = folder(), other = folder(), marker = join(d, 'EXECUTED')
+    for (const dir of [d, other]) {
+      execFileSync('git', ['init', '-q'], { cwd: dir })
+      put(dir, dir === d ? 'safe.js' : 'OUTSIDE_MARKER.js')
+      execFileSync('git', ['add', '.'], { cwd: dir })
+    }
+    execFileSync('git', ['config', 'core.fsmonitor', `echo EXECUTED > '${marker.replaceAll('\\', '/')}'`], { cwd: d })
+    agyContext({ prompt: '', cwd: d })
+    expect(() => readFileSync(marker)).toThrow()
+    const prev = process.env.GIT_DIR
+    try {
+      process.env.GIT_DIR = join(other, '.git')
+      expect(agyContext({ prompt: '', cwd: d })).not.toContain('OUTSIDE_MARKER')
+    } finally { if (prev === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = prev }
+  })
   it('comes from git ls-files and honours the cap', () => {
     const d = folder()
     execFileSync('git', ['init', '-q'], { cwd: d })
@@ -64,6 +80,14 @@ describe('agyContext: the file list', () => {
 })
 
 describe('agyContext: named files', () => {
+  it('hardening: suppresses secret directories, internal files and their names', () => {
+    const d = folder()
+    const names = ['.AWS/config.json', '.SSH/config.json', '.git-credentials', '.netrc', '.pypirc', 'vault.kdbx', 'node_modules/pkg/index.js', '.ENV.local']
+    for (const name of names) put(d, name, 'PRIVATE_MARKER')
+    const text = agyContext({ prompt: names.join(' '), cwd: d })
+    expect(text).not.toContain('PRIVATE_MARKER')
+    for (const name of names) expect(text).not.toContain(name)
+  })
   it('includes a named file with line numbers, and nothing unsafe', () => {
     const d = folder()
     const outside = folder()

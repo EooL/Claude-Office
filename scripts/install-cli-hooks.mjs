@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { readFileSync, existsSync, mkdirSync, writeFileSync, renameSync, unlinkSync, rmSync, realpathSync } from 'node:fs'
+import { readFileSync, existsSync, mkdirSync, writeFileSync, renameSync, unlinkSync, rmSync, realpathSync, lstatSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
 
@@ -18,12 +18,13 @@ export function configPath(cli, home) {
 }
 export function ownsHook(h) {
   const words = [...(typeof h?.command === 'string' ? h.command.match(/"[^"]*"|'[^']*'|[^\s]+/g) ?? [] : []), ...(Array.isArray(h?.args) ? h.args : [])]
-  return words.some(w => typeof w === 'string' && /(?:^|\/)hooks\/cli-tracker\.mjs$/.test(w.replace(/^['"]|['"]$/g, '').replaceAll('\\', '/')))
+  const unquote = w => typeof w === 'string' ? w.replace(/^['"]|['"]$/g, '').replaceAll('\\', '/') : ''
+  return words.length === 4 && unquote(words[0]) === 'node' && /(?:^|\/)hooks\/cli-tracker\.mjs$/.test(unquote(words[1])) && CLIS.includes(words[2]) && eventsFor(words[2]).includes(words[3])
 }
 export function hookHandler(cli, event, tracker) {
   const path = tracker.replaceAll('\\', '/')
   // Qoder's exec form avoids any shell; Codex/agy use quoted forward-slash paths.
-  if (/["\r\n$`%]/.test(path)) throw new Error('Tracker path contains unsupported shell characters')
+  if (/["\x00-\x1f\x7f$`%&^!]/.test(path)) throw new Error('Tracker path contains unsupported shell characters')
   return { type: 'command', ...(cli === 'qoder' ? { command: 'node', args: [path, cli, event] } : { command: `node "${path}" ${cli} ${event}` }), timeout: 2, ...(cli === 'agy' || (cli === 'codex' && event === 'SessionEnd') ? {} : { async: true }) }
 }
 function object(v) { return !!v && typeof v === 'object' && !Array.isArray(v) }
@@ -46,6 +47,7 @@ export function pluginSource(tracker) {
 }
 export function prepareInstall(cli, { home, tracker = fileURLToPath(new URL('../hooks/cli-tracker.mjs', import.meta.url)), uninstall = false }) {
   const file = configPath(cli, home)
+  safeConfigPath(file)
   const before = existsSync(file) ? readFileSync(file, 'utf8') : null
   let after
   if (cli === 'opencode') {
@@ -91,19 +93,21 @@ export function prepareInstall(cli, { home, tracker = fileURLToPath(new URL('../
 export function applyInstall(plan, { rename = renameSync, pause = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms) } = {}) {
   if (!plan.changed) return
   const { file, before, after } = plan
+  safeConfigPath(file)
   mkdirSync(dirname(file), { recursive: true })
+  safeConfigPath(file)
   // Refuse a concurrent edit instead of overwriting its owner's changes.
   const current = existsSync(file) ? readFileSync(file, 'utf8') : null
   if (current !== before) throw new Error(`${file}: changed during installation; retry`)
   const backup = before !== null ? `${file}.backup.${randomUUID()}` : null
   if (backup) writeFileSync(backup, before, { flag: 'wx', mode: 0o600 })
-  if (after === null) { unlinkSync(file); return }
+  if (after === null) { safeConfigPath(file); unlinkSync(file); return }
   const tmp = `${file}.tmp.${randomUUID()}`
   try {
     writeFileSync(tmp, after, { flag: 'wx', mode: 0o600 })
     // Windows refuses to replace a file another process has open; retry briefly (same idea as server/registry.mjs).
     for (let attempt = 1; ; attempt++) {
-      try { rename(tmp, file); break } catch (error) {
+      try { safeConfigPath(file); rename(tmp, file); break } catch (error) {
         if (!['EPERM', 'EACCES', 'EBUSY'].includes(error.code) || attempt >= 6) {
           if (backup) rmSync(backup, { force: true }) // the target was not changed, so the backup is only noise
           throw new Error(`${file}: could not replace the file (${error.code ?? error.message}); nothing was changed`)
@@ -112,6 +116,19 @@ export function applyInstall(plan, { rename = renameSync, pause = ms => Atomics.
       }
     }
   } finally { rmSync(tmp, { force: true }) }
+}
+function safeConfigPath(file) {
+  let path = resolve(file)
+  while (true) {
+    try {
+      const st = lstatSync(path)
+      if (st.isSymbolicLink()) throw new Error(`${path}: link or junction refused`)
+      if (path === resolve(file) && (!st.isFile() || st.size > 1024 * 1024)) throw new Error(`${path}: config is not a bounded regular file`)
+    } catch (e) { if (e.code !== 'ENOENT') throw e }
+    const parent = dirname(path)
+    if (parent === path) break
+    path = parent
+  }
 }
 export function hooksInstalled(cli, home) {
   try {

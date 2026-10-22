@@ -2,9 +2,11 @@
 // Office toolbox: a small read-only MCP server (stdio, newline-delimited JSON-RPC 2.0).
 // stdout carries only protocol messages; diagnostics go to stderr.
 import { execFileSync } from 'node:child_process'
-import { appendFileSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
-import { createInterface } from 'node:readline'
-import { basename, isAbsolute, relative, resolve, sep } from 'node:path'
+import { opendirSync, realpathSync, statSync } from 'node:fs'
+import { StringDecoder } from 'node:string_decoder'
+import { projectPath, readProjectFile, secretPath, blockedPath, safeGitArgs, safeGitEnv, appendBoundedLog } from '../server/project-files.mjs'
+import { cleanToolText } from '../server/tool-needs.mjs'
+import { basename, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads'
 
@@ -16,30 +18,29 @@ const MAX_FILE = 1024 * 1024
 const MAX_READ_FILE = 2 * 1024 * 1024
 const SEARCH_MS = 3000
 const WALK_SKIP = new Set(['node_modules', '.git', 'dist', 'build', 'coverage'])
-const SECRET_NAME = /^(\.env.*|.*\.(pem|key|p12|pfx)|id_rsa.*|id_ed25519.*|auth-token|credentials.*|\.npmrc)$/i
-const SECRET_DIRS = new Set(['.ssh', '.gnupg', '.aws'])
 
 class ToolError extends Error {}
 
 const slash = p => p.replaceAll('\\', '/')
-const isSecret = rel => slash(rel).split('/').some(s => SECRET_DIRS.has(s) || SECRET_NAME.test(s) || s.toLowerCase().includes('secret'))
-const isBlocked = rel => slash(rel).split('/').some(s => s === '.git' || s === 'node_modules')
+const isSecret = secretPath
+const isBlocked = blockedPath
 const isBinary = buf => buf.subarray(0, 8000).includes(0)
 const num = (v, def, min, max) => (Number.isFinite(v) ? Math.min(max, Math.max(min, Math.trunc(v))) : def)
 const cap = text => (text.length > MAX_TEXT ? text.slice(0, MAX_TEXT) + `\n[truncated: output exceeded ${MAX_TEXT} characters]` : text)
 
 // ---- worker side: the regex search runs here so a catastrophic pattern can be killed ----
 if (!isMainThread) {
-  const { files, source, flags, max, context, deadline } = workerData
+  const { files, root, globSource, globBasename, source, flags, max, context, deadline } = workerData
   const re = new RegExp(source, flags)
+  const glob = globSource ? new RegExp(globSource) : null
   const out = []
   let skipped = 0, scanned = 0, stopped = false
   outer: for (const f of files) {
     if (Date.now() > deadline) { stopped = true; break }
+    if (glob && !glob.test(f.rel) && !(globBasename && glob.test(basename(f.rel)))) continue
     let buf
     try {
-      if (statSync(f.abs).size > MAX_FILE) { skipped++; continue }
-      buf = readFileSync(f.abs)
+      buf = readProjectFile(root, f.rel, MAX_FILE).buf
     } catch { skipped++; continue }
     if (isBinary(buf)) { skipped++; continue }
     scanned++
@@ -63,28 +64,14 @@ let ROOT = ROOT_ARG
 try { ROOT = realpathSync(ROOT_ARG) } catch { /* reported by tools */ }
 
 function jail(p, { missing = false } = {}) {
-  if (p !== undefined && typeof p !== 'string') throw new ToolError('path must be a string')
-  const abs = resolve(ROOT, p || '.')
-  let real
-  try { real = realpathSync(abs) } catch (e) {
-    if (!missing || e.code !== 'ENOENT') throw new ToolError(`not found: ${p}`)
-    real = abs
-  }
-  const rel = relative(ROOT, real)
-  if (rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel)) throw new ToolError(`refused: path is outside the project root: ${p}`)
-  const lexical = relative(ROOT, abs)
-  for (const r of [rel, lexical]) {
-    if (isBlocked(r)) throw new ToolError(`refused: .git and node_modules are not available: ${p}`)
-    if (isSecret(r)) throw new ToolError(`refused: secret-looking path: ${p}`)
-  }
-  return { abs: real, rel: slash(rel) || '.' }
+  try { return projectPath(ROOT, p ?? '.', { missing }) } catch (e) { throw new ToolError(`refused: ${e.message}`) }
 }
 
 function git(args) {
   try {
-    return execFileSync('git', ['--no-pager', '-c', 'core.fsmonitor=false', ...args], {
+    return execFileSync('git', [...safeGitArgs(ROOT), ...args], {
       cwd: ROOT, encoding: 'utf8', timeout: 10_000, maxBuffer: 32 * 1024 * 1024, windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_PAGER: 'cat' },
+      stdio: ['ignore', 'pipe', 'pipe'], env: safeGitEnv(),
     })
   } catch (e) {
     if (e.code === 'ENOENT') throw new ToolError('git is not installed or not on PATH')
@@ -95,9 +82,9 @@ function git(args) {
 
 function gitFiles() {
   try {
-    const out = execFileSync('git', ['-c', 'core.fsmonitor=false', 'ls-files', '-co', '--exclude-standard', '-z'], {
-      cwd: ROOT, encoding: 'utf8', timeout: 5000, maxBuffer: 64 * 1024 * 1024, windowsHide: true,
-      stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    const out = execFileSync('git', [...safeGitArgs(ROOT), 'ls-files', '-co', '--exclude-standard', '-z'], {
+      cwd: ROOT, encoding: 'utf8', timeout: 5000, maxBuffer: 8 * 1024 * 1024, windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore'], env: safeGitEnv(),
     })
     return out.split('\0').filter(Boolean)
   } catch { return null }
@@ -105,12 +92,14 @@ function gitFiles() {
 
 // Every file under baseRel (forward-slash, root-relative), minus .git/node_modules. Walk skips dot-folders, build dirs and files over 1 MB.
 function walk(baseAbs, baseRel, maxDepth, out, dirs) {
+  let visited = 0
   const go = (abs, rel, level) => {
-    let entries
-    try { entries = readdirSync(abs, { withFileTypes: true }) } catch { return }
-    for (const e of entries) {
+    let entries, e
+    try { entries = opendirSync(abs) } catch { return }
+    try { while ((e = entries.readSync())) {
       const r = rel ? `${rel}/${e.name}` : e.name
-      if (e.isSymbolicLink()) continue
+      if (++visited > 20_000) return
+      if (e.isSymbolicLink() || isSecret(r) || isBlocked(r)) continue
       if (e.isDirectory()) {
         if (WALK_SKIP.has(e.name) || e.name.startsWith('.')) continue
         dirs.push(r)
@@ -119,7 +108,7 @@ function walk(baseAbs, baseRel, maxDepth, out, dirs) {
         try { if (statSync(resolve(abs, e.name)).size > MAX_FILE) continue } catch { continue }
         out.push(r)
       }
-    }
+    } } finally { entries.closeSync() }
   }
   go(baseAbs, baseRel === '.' ? '' : baseRel, 1)
 }
@@ -146,6 +135,7 @@ const tools = {
       const set = new Set()
       for (const f of c.files) {
         if (isSecret(f)) continue
+        try { jail(f) } catch { continue }
         const segs = f.slice(prefix.length).split('/')
         set.add(segs.length <= depth ? f : prefix + segs.slice(0, depth).join('/') + '/')
       }
@@ -168,15 +158,16 @@ const tools = {
       let files, secretSkipped = 0
       if (statSync(base.abs).isFile()) files = [base.rel]
       else files = collect(base).files
+      let globSource
       if (a.glob !== undefined) {
         if (typeof a.glob !== 'string' || a.glob.length > 200) throw new ToolError('invalid glob')
         const g = new RegExp('^' + a.glob.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*\*\//g, '\u0001').replace(/\*\*/g, '\u0002').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]').replace(/\u0001/g, '(?:.*/)?').replace(/\u0002/g, '.*') + '$')
-        files = files.filter(f => g.test(f) || (!a.glob.includes('/') && g.test(basename(f))))
+        globSource = g.source
       }
       files = files.filter(f => (isSecret(f) ? (secretSkipped++, false) : true)).slice(0, 20_000)
       const max = num(a.max_results, 100, 1, 500)
       const res = await new Promise(done => {
-        const w = new Worker(SELF, { workerData: { files: files.map(f => ({ rel: f, abs: resolve(ROOT, f) })), source, flags, max, context: num(a.context, 0, 0, 3), deadline: Date.now() + SEARCH_MS } })
+        const w = new Worker(SELF, { workerData: { files: files.map(f => ({ rel: f })), root: ROOT, globSource, globBasename: typeof a.glob === 'string' && !a.glob.includes('/'), source, flags, max, context: num(a.context, 0, 0, 3), deadline: Date.now() + SEARCH_MS } })
         const timer = setTimeout(() => { w.terminate(); done({ out: [], skipped: 0, scanned: 0, stopped: 'killed' }) }, SEARCH_MS + 500)
         w.once('message', m => { clearTimeout(timer); done(m) })
         w.once('error', e => { clearTimeout(timer); done({ out: [], skipped: 0, scanned: 0, stopped: 'error: ' + e.message }) })
@@ -198,7 +189,7 @@ const tools = {
       const st = statSync(f.abs)
       if (!st.isFile()) throw new ToolError('not a file')
       if (st.size > MAX_READ_FILE) throw new ToolError('file is larger than 2 MB')
-      const buf = readFileSync(f.abs)
+      const buf = readProjectFile(ROOT, a.path, MAX_READ_FILE).buf
       if (isBinary(buf)) throw new ToolError('binary file refused')
       const lines = buf.toString('utf8').split(/\r?\n/)
       if (lines.at(-1) === '') lines.pop()
@@ -221,7 +212,7 @@ const tools = {
         if (typeof a.author !== 'string' || !a.author || a.author.length > 100 || /[\x00-\x1f]/.test(a.author)) throw new ToolError('invalid author')
         args.push('--author=' + a.author)
       }
-      args.push('--', ...(a.path ? [jail(a.path, { missing: true }).rel] : []))
+      args.push('--', ...(a.path ? [':(literal)' + jail(a.path, { missing: true }).rel] : []))
       return git(args) || '(no commits)'
     },
   },
@@ -229,14 +220,14 @@ const tools = {
     description: 'git show --stat --patch for a revision (output capped at 60,000 characters).',
     inputSchema: { type: 'object', required: ['rev'], properties: { rev: { type: 'string' }, path: { type: 'string' } } },
     run(a) {
-      return git(['show', '--no-color', '--no-ext-diff', '--no-textconv', '--stat', '--patch', rev(a.rev), '--', ...pathspec(a.path)])
+      return git(['show', '--no-color', '--no-ext-diff', '--no-textconv', '--stat', '--patch', commitRev(a.rev), '--', ...pathspec(a.path)])
     },
   },
   git_diff: {
     description: 'git diff; default is working tree vs HEAD. base/head are revisions.',
     inputSchema: { type: 'object', properties: { base: { type: 'string' }, head: { type: 'string' }, path: { type: 'string' }, stat_only: { type: 'boolean' } } },
     run(a) {
-      const revs = a.head !== undefined ? [rev(a.base ?? 'HEAD'), rev(a.head)] : [rev(a.base ?? 'HEAD')]
+      const revs = a.head !== undefined ? [commitRev(a.base ?? 'HEAD'), commitRev(a.head)] : [commitRev(a.base ?? 'HEAD')]
       return git(['diff', '--no-color', '--no-ext-diff', '--no-textconv', a.stat_only ? '--stat' : '--patch', ...revs, '--', ...pathspec(a.path)]) || '(no differences)'
     },
   },
@@ -246,22 +237,27 @@ function rev(v) {
   if (typeof v !== 'string' || !/^[A-Za-z0-9._\/~^@{}-]{1,100}$/.test(v) || v.startsWith('-')) throw new ToolError('invalid revision')
   return v
 }
+function commitRev(v) {
+  const hash = git(['rev-parse', '--verify', '--end-of-options', rev(v) + '^{commit}']).trim()
+  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(hash)) throw new ToolError('invalid commit revision')
+  return hash
+}
 // Optional jailed path plus excludes so history/diff output never shows secret-looking files.
 function pathspec(p) {
-  const ex = ['.env*', '*.pem', '*.key', '*.p12', '*.pfx', 'id_rsa*', 'id_ed25519*', 'auth-token', 'credentials*', '.npmrc', '*secret*', '.ssh/**', '.gnupg/**', '.aws/**'].map(x => `:(exclude,glob)**/${x}`)
-  return [...(p ? [jail(p, { missing: true }).rel] : ['.']), ...ex]
+  const ex = ['.env*', '*.pem', '*.key', '*.p12', '*.pfx', '*.kdbx', 'id_rsa*', 'id_ed25519*', 'auth-token', 'credentials*', '.npmrc', '.git-credentials', '.netrc', '.pypirc', '*secret*', '.ssh/**', '.gnupg/**', '.aws/**', '.git/**', 'node_modules/**'].map(x => `:(exclude,glob,icase)**/${x}`)
+  return [...(p ? [':(literal)' + jail(p, { missing: true }).rel] : ['.']), ...ex]
 }
 
 function audit(tool, ok, ms, args) {
   const file = process.env.OFFICE_TOOLS_LOG
   if (!file) return
   const summary = {}
-  for (const k of ['path', 'pattern', 'rev', 'base', 'head']) if (typeof args?.[k] === 'string') summary[k] = args[k].slice(0, 200)
-  try { appendFileSync(file, JSON.stringify({ t: new Date().toISOString(), tool, ok, ms, args: summary }) + '\n') } catch (e) { console.error('audit log failed:', e.message) }
+  for (const k of ['path', 'pattern', 'rev', 'base', 'head']) if (typeof args?.[k] === 'string') summary[k] = cleanToolText(args[k], 200)
+  try { appendBoundedLog(file, JSON.stringify({ t: new Date().toISOString(), tool: cleanToolText(tool, 80), ok, ms, args: summary }) + '\n') } catch (e) { console.error('audit log failed:', e.message) }
 }
 
 async function callTool(params) {
-  const name = params?.name, args = params?.arguments && typeof params.arguments === 'object' ? params.arguments : {}
+  const name = typeof params?.name === 'string' ? params.name : '', args = params?.arguments && typeof params.arguments === 'object' && !Array.isArray(params.arguments) ? params.arguments : {}
   const t0 = Date.now()
   let ok = true, text
   try {
@@ -286,7 +282,7 @@ async function handle(msg) {
   }
 }
 
-const send = o => process.stdout.write(JSON.stringify(o) + '\n')
+const send = o => new Promise(done => process.stdout.write(JSON.stringify(o) + '\n', done))
 
 function printConfig(cli) {
   const script = slash(SELF), root = slash(ROOT_ARG)
@@ -321,24 +317,42 @@ if (isMainThread) {
   if (argv.includes('--print-config')) {
     printConfig(flagVal('--print-config'))
   } else {
-    let chain = Promise.resolve()
-    createInterface({ input: process.stdin }).on('line', line => {
+    const decoder = new StringDecoder('utf8')
+    let pending = '', dropping = false
+    const processLine = async line => {
       if (!line.trim()) return
-      chain = chain.then(async () => {
-        let msg
-        try { msg = JSON.parse(line) } catch { return send({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } }) }
-        if (!msg || typeof msg !== 'object' || Array.isArray(msg) || typeof msg.method !== 'string') {
-          return send({ jsonrpc: '2.0', id: msg?.id ?? null, error: { code: -32600, message: 'invalid request' } })
+      let depth = 0, quoted = false, escaped = false
+      for (const char of line) {
+        if (quoted) { if (escaped) escaped = false; else if (char === '\\') escaped = true; else if (char === '"') quoted = false }
+        else if (char === '"') quoted = true
+        else if (char === '{' || char === '[') { if (++depth > 64) return send({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'JSON nesting limit exceeded' } }) }
+        else if (char === '}' || char === ']') depth--
+      }
+      let msg
+      try { msg = JSON.parse(line) } catch { return send({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } }) }
+      if (!msg || typeof msg !== 'object' || Array.isArray(msg) || typeof msg.method !== 'string' || msg.method.length > 80 || (msg.id != null && !['string', 'number'].includes(typeof msg.id)) || (typeof msg.id === 'string' && msg.id.length > 200)) return send({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'invalid request' } })
+      try {
+        const result = await handle(msg)
+        if (msg.id != null) await send({ jsonrpc: '2.0', id: msg.id, result })
+      } catch (e) {
+        if (msg.id != null) await send({ jsonrpc: '2.0', id: msg.id, error: { code: e.rpc ?? -32603, message: cap(e.message) } })
+      }
+    }
+    // Await each request; the input stream provides backpressure instead of a promise queue.
+    for await (const chunk of process.stdin) {
+      const parts = decoder.write(chunk).split('\n')
+      for (let i = 0; i < parts.length; i++) {
+        if (!dropping) pending += parts[i]
+        if (pending.length > 256 * 1024) {
+          pending = ''; dropping = true
+          await send({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'request line too large' } })
         }
-        const hasId = msg.id !== undefined && msg.id !== null
-        try {
-          const result = await handle(msg)
-          if (hasId) send({ jsonrpc: '2.0', id: msg.id, result })
-        } catch (e) {
-          console.error('request failed:', e.message)
-          if (hasId) send({ jsonrpc: '2.0', id: msg.id, error: { code: e.rpc ?? -32603, message: e.message } })
+        if (i < parts.length - 1) {
+          if (!dropping) await processLine(pending)
+          pending = ''; dropping = false
         }
-      }).catch(e => console.error('fatal in handler:', e))
-    })
+      }
+    }
+    if (!dropping && pending) await processLine(pending + decoder.end())
   }
 }

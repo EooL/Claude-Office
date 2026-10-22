@@ -25,3 +25,5 @@ button.chat-text-link { display: inline; padding: 0; border: 0; background: none
 .chat-next-action .chat-next-decline { margin-left: 8px; background: transparent; border: 1px solid var(--meter-border, #2b2e33); color: var(--meter-sub, #8b8d91); }
 .chat-next-action .chat-next-decline:hover:not(:disabled) { color: var(--meter-fg, #e6e6e6); border-color: var(--meter-electric, #4fa3ff); }
 .chat-next-decided { margin: 6px 0; color: var(--meter-sub, #8b8d91); }
+.chat-next-action blockquote { margin: 6px 0; padding-left: 10px; border-left: 2px solid var(--meter-sub, #8b8d91); white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-next-action button:focus-visible { outline: 2px solid var(--meter-electric, #4fa3ff); outline-offset: 3px; }

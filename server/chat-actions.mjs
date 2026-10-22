@@ -5,8 +5,13 @@ export { FOLLOW_UP_INSTRUCTION, planId }
 
 // This explicit marker is a proposal, never executable model output.
 export function nextAction(text) {
-  const matches = [...String(text).matchAll(/^NEXT_ACTION:[ \t]*([^\r\n]{8,600})[ \t]*$/gm)]
-  return matches.length === 1 ? matches[0][1].trim() : null
+  const lines = [...String(text).matchAll(/^(NEXT_ACTION|Suggested next steps?):[ \t]*([^\r\n]*)\r?$/gim)]
+  // Prefer the explicit marker when an agent repeats its recommendation in prose.
+  const explicit = lines.filter(line => line[1].toUpperCase() === 'NEXT_ACTION')
+  const selected = explicit.length ? explicit : lines
+  if (selected.length !== 1) return null
+  const task = selected[0][2].trim()
+  return task.length >= 8 && task.length <= 600 ? task : null
 }
 
 /** What a decision line says about the step: its first line, kept short. */
@@ -22,6 +27,11 @@ const gist = text => {
  */
 export function mountChatActions(app, { db, requireUi, readState, enqueue, log = () => {}, paused = () => false, now = Date.now }) {
   db.exec('CREATE TABLE IF NOT EXISTS chat_action_approvals (action_id TEXT PRIMARY KEY, approved_at INTEGER NOT NULL)')
+  // Extend the existing decision ledger, not a second store. Older rows stay used,
+  // but have no invented outcome when their original decision is unknown.
+  if (!db.prepare('PRAGMA table_info(chat_action_approvals)').all().some(column => column.name === 'decision')) {
+    db.exec('ALTER TABLE chat_action_approvals ADD COLUMN decision TEXT')
+  }
   const used = db.prepare('SELECT 1 FROM chat_action_approvals WHERE action_id = ?')
   const rows = () => db.prepare("SELECT * FROM messages WHERE is_system = 0 AND recipient IS NULL AND role NOT IN ('default','boss') AND (msg_type IS NULL OR msg_type NOT IN ('prompt','reply','goal')) ORDER BY id DESC LIMIT 50").all()
   function available() {
@@ -61,16 +71,24 @@ export function mountChatActions(app, { db, requireUi, readState, enqueue, log =
     }
     return actions.filter(a => !used.get(a.id))
   }
-  app.get('/chat/actions', requireUi, (_req, res) => res.json({ actions: available().map(({ command, ...a }) => a), paused: paused() }))
+  const suggestion = row => ({ id: `next:${row.id}`, messageId: row.id, kind: 'plan', label: 'Plan recommended step', request: nextAction(row.text) })
+  app.get('/chat/actions', requireUi, (_req, res) => {
+    const decisions = rows().filter(row => nextAction(row.text)).flatMap(row => {
+      const action = suggestion(row)
+      const entry = db.prepare('SELECT decision FROM chat_action_approvals WHERE action_id = ?').get(action.id)
+      return ['started', 'ignored'].includes(entry?.decision) ? [{ ...action, decision: entry.decision }] : []
+    })
+    res.json({ actions: available().map(({ command, ...a }) => a), decisions, paused: paused() })
+  })
   /** Records the decision on an action; false when it was already decided (a repeated click). */
-  const claim = action => db.prepare('INSERT OR IGNORE INTO chat_action_approvals VALUES (?, ?)').run(action.id, now()).changes > 0
+  const claim = (action, decision) => db.prepare('INSERT OR IGNORE INTO chat_action_approvals (action_id, approved_at, decision) VALUES (?, ?, ?)').run(action.id, now(), decision).changes > 0
 
   app.post('/chat/actions/approve', requireUi, (req, res) => {
     if (paused()) return res.status(409).json({ error: 'AI is paused. Enable AI before approving a step.' })
     const action = available().find(a => a.id === req.body?.id)
     if (!action) return res.status(409).json({ error: 'This recommendation was used or superseded. Check the latest plan.' })
     // Same SQLite transaction: a repeated click cannot enqueue the operation twice.
-    const approved = db.transaction(() => (claim(action) ? enqueue(action.command, action.kind === 'goal' ? 'goal' : null) : null))()
+    const approved = db.transaction(() => (claim(action, 'started') ? enqueue(action.command, action.kind === 'goal' ? 'goal' : null) : null))()
     if (approved) log(`✔ Approved: ${action.label} — ${gist(action.request)}`) // after the commit: a failed enqueue leaves no line
     if (!approved) return res.status(409).json({ error: 'This step was already approved.' })
     res.json({ ok: true, kind: action.kind, messageId: approved.id })
@@ -79,8 +97,8 @@ export function mountChatActions(app, { db, requireUi, readState, enqueue, log =
   app.post('/chat/actions/decline', requireUi, (req, res) => {
     const action = available().find(a => a.id === req.body?.id)
     if (!action) return res.status(409).json({ error: 'This recommendation was used or superseded. Check the latest plan.' })
-    const declined = claim(action)
-    if (declined) log(`✖ Declined: ${action.label} — ${gist(action.request)}`)
+    const declined = claim(action, 'ignored')
+    if (declined) log(action.id.startsWith('next:') ? `Ignored: ${gist(action.request)}` : `✖ Declined: ${action.label} — ${gist(action.request)}`)
     if (!declined) return res.status(409).json({ error: 'This step was already decided.' })
     res.json({ ok: true, kind: action.kind })
   })

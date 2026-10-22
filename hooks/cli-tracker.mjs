@@ -1,0 +1,94 @@
+#!/usr/bin/env node
+// Terminal-only telemetry. No permission answering, transcript reading or tool arguments.
+import { readFileSync, realpathSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join, win32 } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { createHmac } from 'node:crypto'
+
+const short = (v, n = 200) => typeof v === 'string' ? v.slice(0, n) : undefined
+
+export function normalizeEvent(cli, event, payload) {
+  if (!['codex', 'agy', 'opencode', 'qoder'].includes(cli) || !payload || typeof payload !== 'object' || Array.isArray(payload)) return null
+  const p = payload
+  // OpenCode properties/info/sessionID/parentID are SDK-inferred, not captured payloads.
+  const props = cli === 'opencode' ? p.properties ?? {} : {}
+  const info = props.info ?? {}
+  const rawId = cli === 'agy' ? p.conversationId : cli === 'opencode' ? p.sessionID ?? props.sessionID ?? info.sessionID ?? info.id : p.session_id
+  if (typeof rawId !== 'string' || !rawId) return null
+  const cwd = short(cli === 'agy' ? p.workspacePaths?.[0] : p.cwd ?? info.directory, 400)
+  const base = { cli, sessionId: `${cli}:${rawId}`.slice(0, 200), cwd, project: cwd ? win32.basename(cwd.replace(/\/$/, '')) : undefined,
+    transcriptPath: short(p.transcript_path ?? p.transcriptPath, 400), model: short(p.model ?? p.modelName ?? info.modelID),
+    ...(typeof p.agent_id === 'string' && p.agent_id ? { agentId: `${cli}:${p.agent_id}`.slice(0, 200) } : {}) }
+  const tool = short(p.tool_name ?? p.toolCall?.name ?? p.tool)
+  const out = (type, fields = {}) => ({ ...base, type, ...fields })
+  switch (event) {
+    case 'SessionStart': case 'session.created':
+      if (cli === 'opencode' && info.parentID) return out('agent_spawned', { sessionId: `opencode:${info.parentID}`.slice(0, 200), agent: { id: `${cli}:${info.id}`, name: 'OpenCode agent', role: 'general-purpose' } })
+      return out('session_started', { source: short(p.source) || 'startup' })
+    case 'SessionEnd': case 'session.deleted': return out('session_ended', { reason: short(p.reason) || 'other' })
+    case 'UserPromptSubmit': return out('session_prompt', { text: short(p.prompt, 2000) })
+    case 'message.updated':
+      // Message metadata is not prompt text. Do not guess from transcript files.
+      return info.role === 'user' ? out('session_prompt') : null
+    case 'PreToolUse': case 'tool.execute.before': return out('agent_working', { status: tool || 'Working', toolName: tool })
+    case 'PostToolUse': case 'tool.execute.after': return out('session_tool_done', { toolName: tool })
+    case 'PermissionRequest': case 'PermissionDenied': case 'permission.asked': return out('session_needs_you', { kind: 'permission', toolName: tool, summary: 'Permission requested in terminal', answerable: false })
+    case 'Notification': return out('session_needs_you', { kind: 'idle', summary: 'Terminal needs attention' })
+    case 'Stop': case 'session.idle': case 'PostInvocation':
+      return p.error ? out('session_error', { error: 'cli_error', detail: 'Terminal reported an error' }) : out('session_turn_end', { text: short(p.last_assistant_message, 2000) })
+    case 'StopFailure': case 'PostToolUseFailure': case 'session.error': return out('session_error', { error: 'cli_error', detail: 'Terminal reported an error' })
+    case 'PreInvocation': return out('agent_working', { status: 'Thinking' })
+    case 'PreCompact': case 'PostCompact': case 'session.compacted': return out('session_compact', { phase: event === 'PreCompact' ? 'pre' : 'post' })
+    case 'CwdChanged': return out('session_cwd')
+    case 'Interrupt': return out('session_turn_end')
+    case 'SubagentStart': case 'SubagentStop': {
+      if (!p.agent_id) return null
+      const id = `${cli}:${short(p.agent_id, 100)}`
+      return event === 'SubagentStart' ? out('agent_spawned', { agent: { id, name: short(p.agent_type) || 'Agent', role: short(p.agent_type) || 'general-purpose' } }) : out('agent_completed', { agentId: id })
+    }
+    default: return null
+  }
+}
+
+export async function sendEvent(event, { env = process.env, fetchImpl = globalThis.fetch } = {}) {
+  if (!event || env.AGENT_OFFICE_RUN === '1') return
+  const home = env.AGENT_OFFICE_HOME || join(env.HOME || homedir(), '.agent-office')
+  let token
+  try { token = readFileSync(join(home, 'auth-token'), 'utf8').trim() } catch { return }
+  if (!token) return
+  // Same logging levels as the server. Read only; never log prompt/reply text.
+  let level = 'summary'
+  try { level = JSON.parse(readFileSync(join(home, 'settings.json'), 'utf8')).logPrompts ?? level } catch {}
+  const body = JSON.stringify({ ...event, ...(event.text !== undefined ? { text: level === 'off' ? undefined : event.text.slice(0, level === 'full' ? 2000 : 200) } : {}) })
+  const url = new URL(env.AGENT_OFFICE_EVENT_URL || `http://127.0.0.1:${env.AGENT_OFFICE_PORT || 3334}/event`)
+  const timestamp = String(Date.now())
+  const signature = createHmac('sha256', token).update(`POST\n${url.pathname}${url.search}\n${timestamp}\n${body}`).digest('hex')
+  try { await fetchImpl(url, { method: 'POST', body, headers: { 'Content-Type': 'application/json', 'X-Office-Timestamp': timestamp, 'X-Office-Signature': signature }, signal: AbortSignal.timeout(1800) }) } catch {}
+}
+
+async function main() {
+  if (process.env.AGENT_OFFICE_RUN === '1') return
+  const [cli, event] = process.argv.slice(2)
+  // agy's decision hooks need a neutral reply even on invalid input or a down server.
+  if (cli === 'agy' && event === 'PreToolUse') process.stdout.write('{"decision":"allow"}')
+  else if (cli === 'agy' && ['PostToolUse', 'Stop'].includes(event)) process.stdout.write('{}')
+  const timer = setTimeout(() => process.exit(0), 2000)
+  try {
+    let input = ''
+    for await (const chunk of process.stdin) {
+      input += chunk
+      if (Buffer.byteLength(input) > 256 * 1024) return
+    }
+    await sendEvent(normalizeEvent(cli, event, JSON.parse(input)))
+  } catch {} finally { clearTimeout(timer) }
+}
+
+let mainModule = false
+try { mainModule = !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)) } catch {}
+if (mainModule) {
+  process.on('uncaughtException', () => process.exit(0))
+  process.on('unhandledRejection', () => process.exit(0))
+  await main()
+  process.exit(0)
+}

@@ -460,7 +460,7 @@ function cliOutput(name, args, timeoutMs = 30_000) {
   const { file, prefix } = launcherFor(name, adapters[name])
   return new Promise((resolve, reject) => {
     let out = ''
-    const child = spawn(file, [...prefix, ...args], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, detached: process.platform !== 'win32' })
+    const child = spawn(file, [...prefix, ...args], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, detached: process.platform !== 'win32', env: { ...process.env, AGENT_OFFICE_RUN: '1' } })
     const timer = setTimeout(() => { terminateTree(child); reject(new Error(`${name} timed out`)) }, timeoutMs)
     child.stdout.on('data', (d) => { out += d })
     child.on('error', (err) => { clearTimeout(timer); reject(err) })
@@ -532,7 +532,7 @@ export function runAdapter(name, prompt, { model, effort, mode = 'chat', write =
     let finished = false
     let child
     try {
-      child = spawn(bin, argv, { stdio: [useStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32', ...(cwd ? { cwd } : {}), env: { ...process.env, ...adapter.env?.({ mode: runMode }), ...env } })
+      child = spawn(bin, argv, { stdio: [useStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32', ...(cwd ? { cwd } : {}), env: { ...process.env, ...adapter.env?.({ mode: runMode }), ...env, AGENT_OFFICE_RUN: '1' } })
     } catch (err) {
       // spawn can throw instead of emitting 'error' (a path or argument the OS refuses): still an answer, not a rejection
       dropFiles()

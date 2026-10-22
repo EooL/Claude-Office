@@ -349,3 +349,21 @@ Issues and pull requests welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 ## License
 
 MIT — the Dunder Mifflin fan art is excluded, see [NOTICE.md](NOTICE.md).
+
+## Hooks for other CLIs
+
+Terminal sessions in Codex, Antigravity (`agy`), OpenCode and Qoder can send session and tool activity to the office through `hooks/cli-tracker.mjs`. Claude Code keeps its existing tracker. Node must be on PATH and this checkout must remain available.
+
+Preview changes first (the default writes nothing), then explicitly install:
+
+```text
+node scripts/install-cli-hooks.mjs all
+node scripts/install-cli-hooks.mjs all --write
+node scripts/install-cli-hooks.mjs codex --uninstall --write
+```
+
+Replace `all` with `codex`, `agy`, `opencode` or `qoder`. `--home <dir>` redirects all configuration paths into a disposable user home; `--dry-run` overrides `--write`. `--print` prints paths/events, never configuration values. Writes preserve other hooks, create unique backups and replace configuration files atomically. Codex's `config.toml` and `notify` are untouched. After installation, open Codex, run `/hooks`, review and trust the Agent Office command hooks; new or changed definitions are skipped until trusted. Restart sessions to load the new configuration.
+
+The tracker reads `AGENT_OFFICE_EVENT_URL`, or `AGENT_OFFICE_PORT` (default 3334), and `${AGENT_OFFICE_HOME}/auth-token` (default `~/.agent-office/auth-token`), signs requests and stops within two seconds. Prompt/reply forwarding respects `settings.json`'s `logPrompts` level. Tokens and prompt text are never logged. Permission decisions stay in the terminal; agy's PreToolUse returns its required neutral allow reply only. Agy cannot report prompt text, session exit or subagent lifecycle; OpenCode session deletion is observable, but ordinary terminal exit is not. OpenCode payload fields are inferred and still need a real-session check.
+
+Office-spawned CLI processes receive `AGENT_OFFICE_RUN=1`; the new tracker and OpenCode plugin ignore those runs to avoid duplicate telemetry. The existing Claude bash tracker is unchanged. `npm run doctor` reports configuration presence for CLIs found on PATH; this does not prove trust or runtime execution. No real CLI configuration is installed automatically.

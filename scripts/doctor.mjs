@@ -34,6 +34,7 @@ import { accessSync, constants, existsSync, readdirSync, readFileSync, realpathS
 import { homedir } from 'node:os'
 import { basename, delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { CLIS, hooksInstalled } from './install-cli-hooks.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const TRACKER_NAME = 'agent-tracker.sh'
@@ -365,6 +366,12 @@ export function checkTools(names = ['python3', 'bash', 'curl'], path = process.e
   })
 }
 
+/** Advisory only: configured does not mean the CLI has trusted or executed it. */
+export function checkCliHooks({ home, path = process.env.PATH }) {
+  return CLIS.filter(cli => which(cli === 'qoder' ? 'qodercli' : cli, path)).map(cli =>
+    result(PASS, `${cli} hooks: ${hooksInstalled(cli, home) ? 'installed' : 'not installed'}`, 'Configuration only; runtime execution and trust are not verified.'))
+}
+
 /** GET /health: is the server up, has it seen hooks. */
 export async function checkServer({ port = DEFAULT_PORT, fetchImpl = globalThis.fetch, timeoutMs = 2000, now = Date.now() } = {}) {
   const url = `http://127.0.0.1:${port}/health`
@@ -466,6 +473,7 @@ export async function runDoctor(opts = {}) {
   results.push(...hooks.results)
   results.push(checkStatusLine({ settings, statusScript, home, pluginOnly: hooks.plugin.found && !hooks.hooks.any }))
   results.push(...checkTools(undefined, opts.path ?? env.PATH))
+  results.push(...checkCliHooks({ home, path: opts.path ?? env.PATH }))
   const server = await checkServer({ port, fetchImpl: opts.fetchImpl, timeoutMs: opts.timeoutMs })
   results.push(...server.results)
   results.push(checkToken({ officeHome, serverUp: server.up }))

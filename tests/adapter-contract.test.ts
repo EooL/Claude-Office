@@ -37,6 +37,7 @@ if (dirIndex >= 0) promptFile = argv[dirIndex + 1] + '/prompt.md'
 if (promptFile) { try { promptFileContent = readFileSync(promptFile, 'utf8') } catch { promptFileContent = '<unreadable>' } }
 const record = { argv, stdin, cwd: process.cwd(), permission: process.env.OPENCODE_PERMISSION ?? null, promptFile, promptFileContent }
 writeFileSync(process.env.RECORD_TO, JSON.stringify(record))
+writeFileSync(process.env.RECORD_TO + '.office-run', process.env.AGENT_OFFICE_RUN ?? '')
 const outIndex = process.argv.indexOf('-o')
 if (outIndex > 0 && process.argv[outIndex + 1] !== '-') { try { writeFileSync(process.argv[outIndex + 1], 'ok') } catch {} }
 const reply = 'ok'
@@ -54,6 +55,7 @@ async function start(name: string, mode: 'chat' | 'plan' | 'write', { fullAccess
   process.env.RECORD_TO = file
   const result = await runAdapter(name, prompt, { mode, model: 'test-model', cwd, timeoutMs: 40000 })
   const run: Run = JSON.parse(readFileSync(file, 'utf8'))
+  expect(readFileSync(file + '.office-run', 'utf8')).toBe('1')
   return { run, result }
 }
 

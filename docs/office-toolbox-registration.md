@@ -4,7 +4,7 @@ Registering the toolbox (`scripts/office-tools-mcp.mjs`) and adding any permissi
 
 The Antigravity permission rule widens what headless `agy -p` runs may do. It is limited to this one server, whose tools are read-only and jailed to the `--root` directory. Never use the broad `mcp(*)` form.
 
-"Verified" means checked against official documentation (plus the local file shape where noted). **No CLI has been run against the toolbox yet.** Server name used below: `claude-office-tools`.
+This is the registration research snapshot, not a runtime guarantee. "Verified" records checks against official documentation (plus the local file shape where noted); installed versions and local-file observations below were not rechecked. `--print-config` marks remaining questions UNVERIFIED for Codex, agy, OpenCode and Qoder; Claude Code has no such label. **No CLI has been run against the toolbox yet.** Server name used below: `claude-office-tools`.
 
 ## Codex (0.163.0)
 
@@ -46,7 +46,7 @@ The Antigravity permission rule widens what headless `agy -p` runs may do. It is
 | Removal | `claude mcp remove claude-office-tools` |
 | Windows | `npx` servers need `"command": "cmd", "args": ["/c", "npx", ...]` (inferred from common guidance, not in the fetched text). `node` needs no wrapper. |
 | Sources | https://code.claude.com/docs/en/mcp ; https://code.claude.com/docs/en/permissions |
-| Unverified | Not run against the toolbox. The bare `mcp__<server>` form is inferred from the naming; the glob form is documented. |
+| Unverified | Not run against the toolbox. The printer describes the bare `mcp__<server>` rule as checked against docs; this research snapshot inferred it from naming. The glob form is documented. |
 
 ## OpenCode (1.18.25)
 

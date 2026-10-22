@@ -49,11 +49,101 @@
 //                 says about why (a limit it never printed). The text joins the error, so classifyFailure sees it.
 // Everything else (scripts/office-run.mjs, scripts/chat-backend.mjs, the chat watcher, the
 // settings screen) picks the new CLI up by name.
-import { spawn, spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
+import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { defaultModelFor, hasFullAccess, isEnabled } from './settings.mjs'
+
+const AGY_LIMITS = Object.freeze({ maxList: 400, maxFiles: 12, maxFileChars: 40_000, maxTotalChars: 150_000, maxWalk: 5000, maxWalkFileBytes: 1_000_000 })
+const WALK_SKIP = /^(node_modules|dist|build|coverage)$/
+const BINARY_EXT = /\.(png|jpe?g|gif|webp|ico|bmp|pdf|zip|gz|tgz|7z|rar|exe|dll|so|dylib|bin|woff2?|ttf|otf|eot|mp[34]|mov|avi|wav|db|sqlite|class|jar|lock)$/i
+const SECRET_NAME = /^(\.env.*|.*\.pem|.*\.key|id_rsa.*|id_ed25519.*|auth-token|credentials.*|.*\.p12|.*\.pfx|.*secret.*|\.npmrc)$/i
+const NAMED_TOKEN = /[\w@.\-\\/:~]+/g
+const NAMED_EXT = /\.(mjs|js|ts|tsx|jsx|json|md|css|html|py|sh)$/i
+
+/** Tracked files from git (the office asks, not the CLI), else a bounded walk. Forward slashes; [] when nothing. */
+function agyFileList(cwd, limits) {
+  try {
+    const out = execFileSync('git', ['ls-files'], { cwd, timeout: 5000, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
+    const files = out.split('\n').map((l) => l.trim().replace(/\\/g, '/')).filter(Boolean)
+    if (files.length) return files
+  } catch { /* not a git repository, or git is missing */ }
+  const files = []
+  const walk = (rel) => {
+    let entries
+    try { entries = readdirSync(join(cwd, rel), { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1)) } catch { return }
+    for (const e of entries) {
+      if (files.length >= limits.maxWalk) return
+      const path = rel ? `${rel}/${e.name}` : e.name
+      if (e.isDirectory()) {
+        if (!e.name.startsWith('.') && !WALK_SKIP.test(e.name)) walk(path)
+      } else if (e.isFile() && !BINARY_EXT.test(e.name)) {
+        try { if (statSync(join(cwd, path)).size <= limits.maxWalkFileBytes) files.push(path) } catch { /* vanished */ }
+      }
+    }
+  }
+  walk('')
+  return files
+}
+
+/** The text of a file the prompt names, if it is a plain, non-secret file inside cwd; else null. */
+function agyNamedFile(cwd, root, token) {
+  const full = resolve(cwd, token)
+  let real
+  try { real = realpathSync(full) } catch { return null }
+  const rel = relative(root, real)
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) return null
+  const parts = rel.split(sep)
+  if (parts.includes('.git') || parts.some((p) => SECRET_NAME.test(p)) || BINARY_EXT.test(real)) return null
+  if (basename(token) && SECRET_NAME.test(basename(token))) return null
+  try {
+    if (!statSync(real).isFile() || statSync(real).size > 5_000_000) return null
+    const text = readFileSync(real, 'utf8')
+    return text.includes('\0') ? null : { rel: parts.join('/'), text }
+  } catch { return null }
+}
+
+/**
+ * The project context for Antigravity in chat and plan: headless it has no search or list tool and its shell commands
+ * are refused, so the office hands it the tracked file list and the files the prompt names. '' when there is nothing.
+ * Pure: the folder is a parameter. Never throws.
+ */
+export function agyContext({ prompt, cwd, limits } = {}) {
+  try {
+    const lim = { ...AGY_LIMITS, ...limits }
+    if (!cwd) return ''
+    const root = realpathSync(cwd)
+    const files = agyFileList(cwd, lim)
+    const named = []
+    let total = 0
+    const seen = new Set()
+    for (const raw of String(prompt ?? '').match(NAMED_TOKEN) ?? []) {
+      if (named.length >= lim.maxFiles || total >= lim.maxTotalChars) break
+      const token = raw.replace(/[.:,;]+$/, '')
+      if (!(/[\\/]/.test(token) || NAMED_EXT.test(token))) continue
+      const f = agyNamedFile(cwd, root, token)
+      if (!f || seen.has(f.rel)) continue
+      seen.add(f.rel)
+      const lines = f.text.split('\n')
+      let body = f.text
+      let cut = false
+      const room = Math.min(lim.maxFileChars, lim.maxTotalChars - total)
+      if (body.length > room) { body = body.slice(0, room); cut = true }
+      total += body.length
+      const numbered = body.split('\n').map((l, i) => `${String(i + 1).padStart(4)}| ${l.replace(/\r$/, '')}`).join('\n')
+      named.push(`--- FILE: ${f.rel} (${lines.length} lines) ---\n${numbered}${cut ? `\n[truncated: only the first ${body.length} of ${f.text.length} characters are shown]` : ''}`)
+    }
+    if (!files.length && !named.length) return ''
+    const shown = files.slice(0, lim.maxList)
+    const left = files.length - shown.length
+    return [
+      'PROJECT CONTEXT. The project files below are provided so that no tool or command is needed. Do not run shell commands. If you need more than this, ask the boss for it in your answer.',
+      shown.length ? `PROJECT FILE LIST (${files.length} files${left ? `, ${left} more not listed` : ''}):\n${shown.join('\n')}` : '',
+      ...named,
+    ].filter(Boolean).join('\n\n')
+  } catch { return '' }
+}
 
 const opt = (flag, value) => (value ? [flag, value] : [])
 const stripAnsiText = (text) => String(text).split(String.fromCharCode(27)).map((part, i) => (i === 0 ? part : part.replace(/^\[[0-9;]*m/, ''))).join('')
@@ -216,6 +306,13 @@ export const adapters = {
       } catch { return 0 }
     },
     models: async () => parseAgyModels(await cliOutput('agy', ['models'])),
+    // Chat and plan: the project file list and the files the prompt names go into the prompt itself (so also into the
+    // prompt file of a long one), because its shell commands are refused. AGENT_OFFICE_AGY_CONTEXT=0 turns it off.
+    preparePrompt: (prompt, { mode, cwd }) => {
+      if (mode === 'write' || process.env.AGENT_OFFICE_AGY_CONTEXT === '0') return prompt
+      const block = agyContext({ prompt, cwd })
+      return block ? `${prompt}\n\n${block}` : prompt
+    },
     args: (prompt, { model, mode }) => [
       // Headless it cannot ask, so a shell command is refused and the run reports "blocked". Its file tools work
       // without the bypass; say so for an approved write unless the service has full access (commands allowed).
@@ -510,6 +607,7 @@ export function runAdapter(name, prompt, { model, effort, mode = 'chat', write =
   const outFile = dir && join(dir, 'reply.txt')
   const useStdin = adapter.promptVia === 'stdin'
   const runMode = write ? 'write' : mode
+  try { prompt = adapter.preparePrompt?.(prompt, { mode: runMode, cwd }) ?? prompt } catch { /* the plain prompt */ }
   // a level this CLI does not know (an old setting, another service's) is left out, not passed on
   const level = adapter.efforts?.includes(effort) ? effort : undefined
   const build = (text) => {

@@ -33,6 +33,9 @@ If `OFFICE_TOOLS_LOG` is set, each call appends `{t, tool, ok, ms, args}` (path/
 
 Headless runs cannot ask for approval, so each CLI needs one narrow permission that allows only this server's tools (not all MCP servers). The owner adds that rule by hand; nothing in this repo edits any CLI setting.
 
-## Planned phase 3 (not built)
+## Needs log and report
 
-A denial log (what a CLI tried and was refused) and a "toolsmith" role that proposes new toolbox tools from those denials.
+- **Recorded**: when a run fails with the permission kind (for example agy's "a tool required the 'command' permission that headless mode cannot prompt for"), one line `{at, service, mode, kind, message, command, task}` is appended to `<office home>/tool-needs.jsonl` (mode 0600, capped at 1 MB by dropping the oldest half). `command` is filled only for agy, from the last `"CommandLine":"..."` string in its newest conversation file written during the run; other CLIs leave it empty.
+- **Never recorded**: prompt text, file contents, anything else from the conversation file. `message` is cut to 240 characters, `command` to 200, `task` to 120; user paths become `~` and secret-looking strings (`sk-...`, `Bearer ...`, `token=...`) become `[redacted]`.
+- **Report**: `npm run toolbox-needs [-- --home <dir>] [--limit N] [--json]` groups the entries by service, mode and command, shows the toolbox tool that covers each (or says none does) and ends with a task template for the office chat that asks an agent for a plan only.
+- **Nothing is automatic**: no tool and no permission is ever added by this log or report. A person reads it and decides.

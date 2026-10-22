@@ -45,6 +45,8 @@
 //   timeoutMs     (optional) a longer limit than the chat's CHAT_AI_TIMEOUT for a slow CLI
 //   activity      (optional) ({ since, env }) => epoch ms of the CLI's latest sign of life (0 = none); lets a run that is
 //                 quiet on stdout but busy go past timeoutMs (a soft deadline, see runAdapter). Must never throw.
+//   refusedCommand (optional) ({ since, env }) => the command a permission refusal was about ('' = unknown); read-only,
+//                 best effort, must never throw. runAdapter sets result.refusedCommand from it on a permission failure.
 //   timeoutHint   (optional) ({ since }) => text, asked when a run was killed by its timeout: what the CLI's own log
 //                 says about why (a limit it never printed). The text joins the error, so classifyFailure sees it.
 // Everything else (scripts/office-run.mjs, scripts/chat-backend.mjs, the chat watcher, the
@@ -54,6 +56,7 @@ import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync,
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { defaultModelFor, hasFullAccess, isEnabled } from './settings.mjs'
+import { classifyFailure } from './availability.mjs'
 
 const AGY_LIMITS = Object.freeze({ maxList: 400, maxFiles: 12, maxFileChars: 40_000, maxTotalChars: 150_000, maxWalk: 5000, maxWalkFileBytes: 1_000_000 })
 const WALK_SKIP = /^(node_modules|dist|build|coverage)$/
@@ -304,6 +307,19 @@ export const adapters = {
         const root = env?.AGENT_OFFICE_AGY_CONVERSATIONS || join(homedir(), '.gemini', 'antigravity-cli', 'conversations')
         return Math.max(0, ...readdirSync(root).filter((n) => n.endsWith('.db')).map((n) => statSync(join(root, n)).mtimeMs).filter((t) => t >= since))
       } catch { return 0 }
+    },
+    // The command a permission refusal was about: the last "CommandLine":"..." string of the newest conversation
+    // written since the run began. Read as latin1 (the file is binary); nothing else is taken from it.
+    refusedCommand: ({ since, env }) => {
+      try {
+        const root = env?.AGENT_OFFICE_AGY_CONVERSATIONS || join(homedir(), '.gemini', 'antigravity-cli', 'conversations')
+        const newest = readdirSync(root).filter((n) => n.endsWith('.db')).map((n) => ({ p: join(root, n), t: statSync(join(root, n)).mtimeMs }))
+          .filter((f) => f.t >= since).sort((a, b) => b.t - a.t)[0]
+        if (!newest) return ''
+        let last = ''
+        for (const m of readFileSync(newest.p, 'latin1').matchAll(/"CommandLine":"((?:[^"\\]|\\.)*)"/g)) last = m[1]
+        return last.replace(/\\(["\\])/g, '$1').slice(0, 200)
+      } catch { return '' }
     },
     models: async () => parseAgyModels(await cliOutput('agy', ['models'])),
     // Chat and plan: the project file list and the files the prompt names go into the prompt itself (so also into the
@@ -703,7 +719,10 @@ export function runAdapter(name, prompt, { model, effort, mode = 'chat', write =
       if (!result.text && !understood) result.text = (file || stdout).trim()
       const hint = timedOut ? adapter.timeoutHint?.({ since: started }) : ''
       const error = [timedOut ? `${name} timed out` : err?.message, hint, stripAnsi(stderr).trim(), typeof parsed.error === 'string' ? parsed.error.trim() : ''].filter(Boolean).join('\n')
-      resolve({ ...result, error, code: code ?? 1, durationMs: Date.now() - started })
+      // best effort: which command a permission refusal was about (only adapters with the hook; never throws)
+      let refusedCommand = ''
+      try { if (adapter.refusedCommand && !result.text && classifyFailure({ text: '', error }).kind === 'permission') refusedCommand = adapter.refusedCommand({ since: started, env: { ...process.env, ...env } }) || '' } catch { /* no command */ }
+      resolve({ ...result, error, code: code ?? 1, durationMs: Date.now() - started, ...(refusedCommand ? { refusedCommand } : {}) })
     }
     child.on('error', (err) => done(1, err))
     child.on('close', (code) => done(code))

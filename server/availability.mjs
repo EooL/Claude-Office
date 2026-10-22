@@ -12,6 +12,7 @@ import { readJson, writeJson } from './jsonfile.mjs'
 import { g0Dir } from './paths.mjs'
 import { acquireProcessLock } from './process-lock.mjs'
 import { createHash } from 'node:crypto'
+import { recordToolNeed } from './tool-needs.mjs'
 
 const MIN = 60_000
 const HOUR = 60 * MIN
@@ -199,5 +200,7 @@ export function finishCircuit(lease, step, failure, { mode = 'chat', now = Date.
       for (const key of lease.keys) if (key !== failureKey) all[key] = { state: 'closed', failures: 0, until: 0, at: now }
     })
     if (failure) setCooldown(failureKey, failure, now)
+    // what was refused, for the toolbox report (server/tool-needs.mjs); never changes the circuit
+    if (failure?.kind === 'permission') recordToolNeed(g0Dir(), { service: step.service, mode, kind: failure.kind, message: failure.message, command: failure.command })
   } finally { lease.release?.() }
 }

@@ -283,7 +283,7 @@ export async function runWithBrain({ steps, prompt, opts = {}, run, blocked = as
       result = { text: '', error: error.message, code: 1, usage: {}, reported: [], durationMs: 0 }
     }
     const failure = classifyFailure(result)
-    if (lease) finishCircuit(lease, step, failure, { mode: opts.mode ?? 'chat' })
+    if (lease) finishCircuit(lease, step, failure && result.refusedCommand ? { ...failure, command: result.refusedCommand } : failure, { mode: opts.mode ?? 'chat' })
     if (!failure) return { ...result, step, attempts }
     if (fail) await fail(step, failure)
     attempts.push({ step, failed: failure.kind })

@@ -206,7 +206,9 @@ export const adapters = {
       instruction: (file) => `The whole task is in the file ${file}. Read it with your file read tool and carry it out exactly as written. Do not run shell commands.`,
       args: (args, _file, dir) => ['--add-dir', dir, ...args],
     },
-    // Headless it prints nothing until the end; its conversation database is written to while it works.
+    // Headless it prints nothing until the end; its conversation database is written to while it works. Measured
+    // 2026-10-22: rewritten every few seconds during tool use, but quiet for 26 to 52 s while the model thinks.
+    activeWindowMs: 120_000,
     activity: ({ since, env }) => {
       try {
         const root = env?.AGENT_OFFICE_AGY_CONVERSATIONS || join(homedir(), '.gemini', 'antigravity-cli', 'conversations')
@@ -500,7 +502,7 @@ function cliOutput(name, args, timeoutMs = 30_000) {
  * extra variables for it. The same prompt gives the same kind of answer from every CLI: one that cannot take it
  * (a prompt longer than a command line allows) answers with an `error`, it never throws or rejects.
  */
-export function runAdapter(name, prompt, { model, effort, mode = 'chat', write = false, timeoutMs = 0, activeWindowMs = 45_000, maxMs = Math.max(timeoutMs * 5, 30 * 60_000), onData, cwd, env } = {}) {
+export function runAdapter(name, prompt, { model, effort, mode = 'chat', write = false, timeoutMs = 0, activeWindowMs, maxMs = Math.max(timeoutMs * 5, 30 * 60_000), onData, cwd, env } = {}) {
   const adapter = adapters[name]
   if (!adapter) throw new Error(`unknown adapter '${name}' (${adapterNames.join(', ')})`)
   const dir = adapter.outFile ? mkdtempSync(join(tmpdir(), 'office-')) : null
@@ -570,7 +572,7 @@ export function runAdapter(name, prompt, { model, effort, mode = 'chat', write =
     let lastData = 0
     // timeoutMs is a soft deadline: a CLI that showed a sign of life in the last activeWindowMs gets another window,
     // up to maxMs in all; one that showed none (or whose probe fails) is ended at timeoutMs, as before
-    const windowMs = Math.min(activeWindowMs, timeoutMs) // never longer than the deadline itself
+    const windowMs = Math.min(activeWindowMs ?? adapter.activeWindowMs ?? 45_000, timeoutMs) // never longer than the deadline itself
     const check = () => {
       const now = Date.now()
       let probed = 0

@@ -6,6 +6,7 @@
  */
 
 import Database from 'better-sqlite3'
+import { CHAT_MESSAGE_LIMIT } from './chat-limits.mjs'
 import { homedir } from 'os'
 import { join } from 'path'
 import { mkdirSync, chmodSync, existsSync } from 'fs'
@@ -148,7 +149,7 @@ export function addMessage({ sender, role = 'default', text, isSystem = false, t
   const info = stmtInsert.run({
     sender,
     role,
-    text,
+    text: typeof text === 'string' ? text.slice(0, CHAT_MESSAGE_LIMIT) : text,
     timestamp,
     isSystem: isSystem ? 1 : 0,
     threadId: threadId ?? null,

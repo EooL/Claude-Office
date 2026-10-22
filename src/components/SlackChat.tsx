@@ -78,6 +78,7 @@ interface SlackChatProps {
 const SlackChat: React.FC<SlackChatProps> = ({ messages, activeAgentCount, muted, volume, onToggleMute, onVolumeChange, onSendMessage, onReaction, autoTypeText, dayPhase, typingUser, lastSeenId, readOnly = false }) => {
   const theme = useTheme()
   const nextActions = useChatActions(readOnly, messages[messages.length - 1]?.id ?? 0)
+  const actionsLayoutKey = nextActions.map(action => `${action.id}:${action.decision ?? ''}:${action.disabled ?? false}`).join(',')
   void theme // Why: subscribe so avatars re-render when /the-office toggles
   const bodyRef = useRef<HTMLDivElement>(null)
   const [inputText, setInputText] = useState('')
@@ -182,7 +183,7 @@ const SlackChat: React.FC<SlackChatProps> = ({ messages, activeAgentCount, muted
     if (bodyRef.current) {
       bodyRef.current.scrollTo({ top: bodyRef.current.scrollHeight, behavior: 'smooth' })
     }
-  }, [messages, typingUser])
+  }, [messages, typingUser, actionsLayoutKey])
 
   const displayed = messages.slice(-12)
 
@@ -282,7 +283,7 @@ const SlackChat: React.FC<SlackChatProps> = ({ messages, activeAgentCount, muted
                     </div>
                   )}
                   <div className={`slack-msg-text${msg.isSystem ? ' slack-system-text' : ''}`}>
-                    <ActionMessage text={msg.text.replace(/^\/goal --plan-id=[a-f0-9]{64}$/, 'Approved the displayed plan.')} messageId={msg.id} readOnly={readOnly} actions={nextActions.filter(action => action.messageId === msg.id)} />
+                    <ActionMessage text={msg.text.replace(/^\/goal --plan-id=[a-f0-9]{64}$/, 'Approved the displayed plan.')} messageId={msg.id} readOnly={readOnly} actions={nextActions.filter(action => action.messageId === msg.id)} onResize={() => bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight, behavior: 'smooth' })} />
                   </div>
                   {msg.reactions && msg.reactions.length > 0 && (
                     <div className="slack-reactions">

@@ -466,8 +466,8 @@ describe('errors are JSON without stack traces or paths (C18)', () => {
     expect(res.body).toEqual({ error: 'Malformed JSON body' })
   })
 
-  it('a body over the 10kb limit is a 413', async () => {
-    const res = await request(office.server.app).post('/chat').send({ sender: 'x', text: 'y'.repeat(20_000) })
+  it('non-chat bodies retain the 10kb limit and return 413', async () => {
+    const res = await request(office.server.app).post('/settings').send({ sender: 'x', text: 'y'.repeat(20_000) })
     expect(res.status).toBe(413)
     expect(res.body).toEqual({ error: 'Request body too large' })
   })

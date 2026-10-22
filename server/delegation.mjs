@@ -23,6 +23,7 @@
 //     hire(agent), working(id, status), finish(id, { result, ...stats }),
 //   }
 import { routeMessage } from './roles.mjs'
+import { clipDelegationChat } from './chat-limits.mjs'
 import { classifyFailure } from './availability.mjs'
 import { randomUUID } from 'node:crypto'
 import { createHash } from 'node:crypto'
@@ -36,7 +37,6 @@ export const BUSY_TTL_MS = 30 * 60_000
 export const CONFIDENT = 0.8
 const PLAN_TIMEOUT_MS = 4 * 60_000
 const GOAL_TIMEOUT_MS = 20 * 60_000
-const CHAT_LIMIT = 1800
 
 // A message is worth asking the classifier about only when it reads like a request
 const TASK_WORDS = [
@@ -140,7 +140,7 @@ export function parsePlan(text) {
   return { plan, goal }
 }
 
-const clip = (text, n = CHAT_LIMIT) => (text.length > n ? `${text.slice(0, n - 1)}…` : text)
+const clip = clipDelegationChat
 const short = (text, n = 60) => (text.length > n ? `${text.slice(0, n - 1)}…` : text)
 
 function isBusy(state, now) {

@@ -1122,7 +1122,7 @@ describe('POST /event body limit', () => {
   beforeAll(async () => { office = await loadOffice() })
   afterAll(() => removeOffice(office))
 
-  it('takes a session event well over 10 KB (2000 non-ASCII characters escape to six bytes each) and still refuses one over 64 KB; everything else keeps 10 KB', async () => {
+  it('keeps the 64 KB event bound and 10 KB settings bound while chat accepts 20000 characters', async () => {
     await postAuthed(office.server, '/settings', { logPrompts: 'full' })
     const text = '☃'.repeat(2000)
     const body = {
@@ -1145,7 +1145,8 @@ describe('POST /event body limit', () => {
     expect(huge.body).toEqual({ error: 'Request body too large' })
 
     const chat = await request(office.server.app).post('/chat').send({ sender: 'x', text: 'y'.repeat(20_000) })
-    expect(chat.status).toBe(413)
+    expect(chat.status).toBe(200)
+    expect((await request(office.server.app).get('/chat')).body.messages.at(-1).text).toBe('y'.repeat(20_000))
     const settings = await postAuthed(office.server, '/settings', { logPrompts: 'summary', pad: 'z'.repeat(20_000) })
     expect(settings.status).toBe(413)
   })

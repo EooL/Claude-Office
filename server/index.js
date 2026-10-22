@@ -28,6 +28,7 @@ import { execFile } from 'child_process'
 import { fileURLToPath } from 'url'
 import { dirname } from 'path'
 import { addMessage, getMessages, markSeen, addReaction, markInboxRead } from './chat-db.js'
+import { CHAT_MESSAGE_LIMIT } from './chat-limits.mjs'
 import db from './chat-db.js'
 import { mountStatus } from './status.js'
 import { mountRegistry } from './sessions.js'
@@ -1570,10 +1571,10 @@ function validateEvent(body) {
 
 const app = express()
 
-// JSON bodies: 10 KiB is plenty for a chat line or a tool event, but a
+// Ordinary JSON bodies retain 10 KiB; chat has a separate bounded parser. A
 // session_prompt / session_turn_end carries up to MAX_TEXT_LEN characters of
 // text (JSON-escaped, several bytes each) plus the background-task list, so
-// /event alone takes more. Its sanitiser clamps every field it keeps.
+// /event takes more too. Its sanitiser clamps every field it keeps.
 const JSON_LIMIT = '10kb'
 const EVENT_JSON_LIMIT = '64kb'
 // Capture the exact request bytes so a signed request (the hook) can be
@@ -1581,6 +1582,8 @@ const EVENT_JSON_LIMIT = '64kb'
 const captureRaw = (req, _res, buf) => { req.rawBody = buf }
 const jsonBody = express.json({ limit: JSON_LIMIT, verify: captureRaw })
 const eventJsonBody = express.json({ limit: EVENT_JSON_LIMIT, verify: captureRaw })
+// Bounded chat transport allows worst-case JSON escaping plus envelope metadata.
+const chatJsonBody = express.json({ limit: CHAT_MESSAGE_LIMIT * 6 + 8192, verify: captureRaw })
 
 // Host-header guard: the first thing every request passes, before the body
 // parsers and CORS. A non-loopback (or missing) Host is a DNS-rebinding page
@@ -1592,7 +1595,7 @@ app.use((req, res, next) => {
   next()
 })
 
-app.use((req, res, next) => (req.path === '/event' ? eventJsonBody : jsonBody)(req, res, next))
+app.use((req, res, next) => (['/chat', '/chat/reply', '/a2a'].includes(req.path) ? chatJsonBody : req.path === '/event' ? eventJsonBody : jsonBody)(req, res, next))
 
 // CORS for local dev — only allow known localhost origins
 app.use((req, res, next) => {
@@ -2013,7 +2016,7 @@ app.post('/chat', (req, res) => {
         console.warn(`[chat] Refused /goal from ${clampString(sender)}: no token`)
         return unauthorized(res, { error: '/goal needs the office token' })
       }
-      const row = addMessage({ sender: clampString(sender), role: 'boss', text: clampString(text, 2000), msgType: 'goal' })
+      const row = addMessage({ sender: clampString(sender), role: 'boss', text: clampString(text, CHAT_MESSAGE_LIMIT), msgType: 'goal' })
       broadcast({ type: 'chat_message', ...row })
       console.log(`[chat] ${row.sender}: ${row.text}`)
       return res.json({ ok: true })
@@ -2028,7 +2031,7 @@ app.post('/chat', (req, res) => {
     }
     const cmdResult = handleSlashCommand(cmd)
     if (cmdResult) {
-      const userMsg = addMessage({ sender: clampString(sender), text: clampString(text, 2000) })
+      const userMsg = addMessage({ sender: clampString(sender), text: clampString(text, CHAT_MESSAGE_LIMIT) })
       broadcast({ type: 'chat_message', ...userMsg })
       const sysMsg = addMessage({ sender: 'system', text: cmdResult, isSystem: true })
       broadcast({ type: 'chat_message', ...sysMsg, isSystem: true })
@@ -2038,7 +2041,7 @@ app.post('/chat', (req, res) => {
 
   const msg = addMessage({
     sender: clampString(sender),
-    text: clampString(text, 2000),
+    text: clampString(text, CHAT_MESSAGE_LIMIT),
   })
 
   // Broadcast to all WS clients
@@ -2176,7 +2179,7 @@ function sendAgentMessage({ sender, role, text, recipient, type, replyTo, sender
   const msg = addMessage({
     sender: from,
     role: clampString(role || 'default'),
-    text: clampString(body, 2000),
+    text: clampString(body, CHAT_MESSAGE_LIMIT),
     threadId: Number.isInteger(replyTo) ? replyTo : null,
     recipient: to,
     msgType,

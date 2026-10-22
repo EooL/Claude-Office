@@ -1,4 +1,10 @@
 .chat-rich-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-expandable { min-width: 0; max-width: 100%; }
+.chat-message-preview { position: relative; overflow-wrap: anywhere; }
+.chat-message-preview.is-collapsed { max-height: 19.2em; overflow: hidden; }
+.chat-message-preview.is-collapsed::after { content: ''; position: absolute; inset: auto 0 0; height: 1.8em; background: linear-gradient(transparent, var(--chat-preview-bg, #1a1d21)); pointer-events: none; }
+.chat-expand-toggle { display: block; margin: 6px 0; padding: 4px 2px; color: var(--meter-electric, #80c6ff); background: transparent; border: 0; text-decoration: underline; cursor: pointer; font: inherit; }
+.chat-expand-toggle:focus-visible { outline: 2px solid var(--meter-electric, #80c6ff); outline-offset: 3px; }
 .chat-text-link { color: #80c6ff; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 button.chat-text-link { display: inline; padding: 0; border: 0; background: none; font: inherit; text-align: left; }
 .chat-text-link:hover { color: #c0e5ff; }

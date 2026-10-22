@@ -73,9 +73,10 @@ const SessionStrip: React.FC<SessionStripProps> = ({ sessions, agents }) => {
     return () => clearInterval(timer)
   }, [sessions.length])
 
-  if (sessions.length === 0) return null
+  const terminals = sessions.filter(session => session.source !== 'office-chat')
+  if (terminals.length === 0) return null
 
-  const ordered = [...sessions].sort((a, b) =>
+  const ordered = [...terminals].sort((a, b) =>
     (a.state === 'ended' ? 1 : 0) - (b.state === 'ended' ? 1 : 0) || (a.startedAt ?? 0) - (b.startedAt ?? 0))
 
   return (

@@ -18,7 +18,9 @@ import { resolveSteps } from '../server/brains.mjs'
 import { readJson, writeJson } from '../server/jsonfile.mjs'
 import { officeHome } from '../server/paths.mjs'
 import { runForOperation, runForRole } from './brain-run.mjs'
-import { office, say } from './office-client.mjs'
+import { office, officeRead, say } from './office-client.mjs'
+import { delegationContext } from './delegation-context.mjs'
+import { reportBackText } from '../server/delegation-identity.mjs'
 
 const here = fileURLToPath(import.meta.url)
 const home = officeHome(process.env.OFFICE_ID ?? 'default')
@@ -51,7 +53,14 @@ const deps = {
   },
   say,
   status: update => office('/event', { type: 'chat_status', status: update }),
-  hire: (agent) => office('/event', { type: 'agent_spawned', agent }),
+  hire: (agent) => office('/event', { type: 'agent_spawned', cwd: agent.cwd, project: agent.project, sessionId: agent.sessionId, source: 'office-chat', agent }),
+  report: async (name, role, text, identity) => {
+    // A plan still needs a public approval card; its agent requester also gets an inbox copy.
+    if (identity?.createdBy?.kind === 'agent' && text.startsWith('Boss, I have a plan:')) {
+      await say(name, role, reportBackText(text, identity.task, identity.createdBy))
+    }
+    return office('/chat/reply', { sender: name, role, text, reportTo: identity?.createdBy, reportTask: identity?.task })
+  },
   working: (id, status) => office('/event', { type: 'agent_working', agentId: id, status }),
   finish: (id, info) => office('/event', { type: 'agent_completed', agentId: id, ...info }),
 }
@@ -88,7 +97,7 @@ async function launchPlan(job) {
     await detach('plan', Buffer.from(JSON.stringify(job)).toString('base64'))
   } catch {
     deps.write({ lastJob: { ...job, phase: 'plan', status: 'failed', failureKind: 'unavailable', at: deps.now() } })
-    await say(job.name, job.role, 'No worker started: the planning process could not start. Check delegation.log in the office runtime directory.')
+    await deps.report(job.name, job.role, 'No worker started: the planning process could not start. Check delegation.log in the office runtime directory.', job)
     await deps.status({ state: 'failed', agent: { name: job.name, role: job.role }, detail: 'the planning process could not start' })
   }
 }
@@ -109,18 +118,21 @@ async function runWorker(action) {
     console.error(`[delegation] ${error.stack ?? error}`)
     const state = deps.read()
     deps.write({ busy: undefined, lastJob: { ...state.lastJob, status: 'failed', failureKind: 'other', finishedAt: deps.now() } })
-    await say(state.lastJob?.name ?? 'Claude', state.lastJob?.role ?? 'assistant', 'The worker stopped unexpectedly. No completion is confirmed. Check delegation.log in the office runtime directory.')
+    await deps.report(state.lastJob?.name ?? 'Claude', state.lastJob?.role ?? 'assistant', 'The worker stopped unexpectedly. No completion is confirmed. Check delegation.log in the office runtime directory.', state.lastJob)
     await deps.status({ state: 'failed', agent: { name: state.lastJob?.name ?? 'Claude', role: state.lastJob?.role ?? 'assistant' }, detail: 'the worker stopped unexpectedly; check delegation.log' })
   } finally { release() }
 }
 
 const [cmd, arg] = process.argv.slice(2)
+if (cmd === 'message' || cmd === 'goal' || cmd === 'goal-run') {
+  deps.identity = await delegationContext(officeRead, arg ?? '', deps.cwd, Number(process.env.AGENT_OFFICE_MESSAGE_ID) || undefined)
+}
 if (cmd === 'message') {
   const outcome = await handleMessage(deps, arg ?? '', launchPlan)
   process.stdout.write(outcome)
 } else if (cmd === 'goal') {
   try { await detach('goal-run', arg ?? '/goal') } catch {
-    await say('Claude', 'assistant', 'No worker started: the execution process could not start. No changes are confirmed.')
+    await deps.report('Claude', 'assistant', 'No worker started: the execution process could not start. No changes are confirmed.', { ...deps.read().plan, ...deps.identity })
     await deps.status({ state: 'failed', detail: 'the execution process could not start' })
   }
   process.stdout.write('handled')

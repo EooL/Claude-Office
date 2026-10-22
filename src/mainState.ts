@@ -132,7 +132,7 @@ export interface StripCounts {
 }
 
 export function stripCounts(sessions: SessionInfo[]): StripCounts {
-  const live = sessions.filter(s => s.state !== 'ended')
+  const live = sessions.filter(s => s.state !== 'ended' && s.source !== 'office-chat')
   const notHooked = live.filter(s => s.hooked === false)
   const needYou = live.filter(s => s.main?.state === 'needs-you' && isHardNeedsYou(s.main.needsYou))
   return {

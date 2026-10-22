@@ -16,9 +16,18 @@ export async function office(path, body) {
       signal: AbortSignal.timeout(5000),
     })
     if (!res.ok) console.error(`[office] ${path} -> ${res.status}`)
+    return res.ok ? await res.json() : null
   } catch (err) {
     console.error(`[office] ${path}: ${err.message}`)
   }
+}
+
+/** Authenticated reads stay on this office's configured port and credential home. */
+export async function officeRead(path) {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port()}${path}`, { headers: { Authorization: `Bearer ${token()}` }, signal: AbortSignal.timeout(1500) })
+    return res.ok ? await res.json() : null
+  } catch { return null }
 }
 
 /** What GET /status says (sessions with their rate limits, totals), or null. */

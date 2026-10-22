@@ -38,6 +38,8 @@ import { mountBrains, refreshCatalogueSoon, startCatalogueRefresh } from './brai
 import { mountArtifacts } from './artifacts.js'
 import { mountChatActions } from './chat-actions.mjs'
 import { CHAT_MESSAGE_LIMIT } from './chat-limits.mjs'
+import { cleanCreator, reportBackText } from './delegation-identity.mjs'
+import { canonicalCwd } from './canonicalCwd.mjs'
 import { readPort, readUiPort, readHost, loadOfficeConfig, bossFromConfig } from './config.js'
 import { agentTranscriptPath, readTranscript, isTranscriptPath, clampLine } from './transcript.js'
 import { defaultOfficeContext } from './office-context.mjs'
@@ -873,7 +875,7 @@ function sessionEvent(session, type = 'session_started') {
 function createSession({ id, project, cwd, source, model, title, transcriptPath, now = Date.now() }) {
   const session = {
     id,
-    hooked: true,
+    hooked: source !== 'office-chat',
     project: projectName(project, cwd),
     cwd,
     source: source || 'implicit',
@@ -921,12 +923,12 @@ function touchSession(body, now = Date.now()) {
   if (!id) return null
   let session = sessions.get(id)
   if (!session) {
-    session = createSession({ id, project: body.project, cwd: body.cwd, source: 'implicit', transcriptPath: body.transcriptPath, now })
+    session = createSession({ id, project: body.project, cwd: body.cwd, source: body.source === 'office-chat' ? 'office-chat' : 'implicit', transcriptPath: body.transcriptPath, now })
     saveAgents()
     broadcast(sessionEvent(session))
     return session
   }
-  if (hookSession(session, 'implicit', now)) {
+  if (body.source !== 'office-chat' && session.source !== 'office-chat' && hookSession(session, 'implicit', now)) {
     saveAgents()
     broadcast(sessionEvent(session))
   }
@@ -1149,7 +1151,7 @@ function saveAgents() {
     // ended sessions are on their way out and are not kept either, nor are
     // registry-only sessions (the registry rebuilds them on the next start)
     const agents = liveAgents()
-    const saved = Array.from(sessions.values()).filter(s => s.state === 'active' && s.hooked !== false).map(sessionToRecord)
+    const saved = Array.from(sessions.values()).filter(s => s.state === 'active' && (s.hooked !== false || s.source === 'office-chat')).map(sessionToRecord)
     writePrivate(AGENTS_FILE, JSON.stringify({ agents, sessions: saved }))
   } catch (err) {
     console.warn('[agents] Could not save agent state:', err.message)
@@ -1174,7 +1176,7 @@ function loadAgents() {
     // Sessions come back with the same stale cutoff; their agent lists are
     // rebuilt from the agents that survived
     for (const session of Array.isArray(saved) ? saved : []) {
-      if (!session?.id || session.state === 'ended' || session.hooked === false) continue
+      if (!session?.id || session.state === 'ended' || (session.hooked === false && session.source !== 'office-chat')) continue
       if ((session.lastActivityAt ?? session.startedAt ?? 0) < cutoff) continue
       const agentIds = (Array.isArray(session.agentIds) ? session.agentIds : []).filter(id => activeAgents.has(id))
       sessions.set(session.id, { ...session, state: 'active', agentIds: new Set(agentIds), main: restoredMain(session.main) })
@@ -1878,6 +1880,8 @@ app.post('/event', requireToken, (req, res) => {
       agentType:  clampString(body.agent.agentType),
       background: !!body.agent.background,
       parentSubagentId: clampString(body.agent.parentSubagentId),
+      createdBy: cleanCreator(body.agent.createdBy),
+      routedBy: clampString(body.agent.routedBy, 80),
     } : undefined,
     agentId: clampString(body.agentId),
     subagentId: clampString(body.subagentId),
@@ -2215,9 +2219,15 @@ function agentAddresses(agent) {
  * POST /chat/reply and the A2A JSON-RPC endpoint.
  * @returns {{ error?: string, status?: number, msg?: object, to?: string|null, recipientAgent?: object|null }}
  */
-function sendAgentMessage({ sender, role, text, recipient, type, replyTo, senderId }) {
+function sendAgentMessage({ sender, role, text, recipient, type, replyTo, senderId, reportTo, reportTask }) {
   if (currentOffice() !== defaultOffice) throw new Error('Agent messaging not scoped yet')
   if (!text || typeof text !== 'string') return { error: 'Missing text', status: 400 }
+  const creator = cleanCreator(reportTo)
+  if (creator) {
+    const target = creator.kind === 'agent' ? findAgent(creator.name) : null
+    recipient = target && target.state !== 'completed' ? target.name : null
+    text = reportBackText(text, reportTask ?? '', creator)
+  }
 
   let to = clampString(recipient)?.trim() || null
   let body = text
@@ -2274,6 +2284,7 @@ function sendAgentMessage({ sender, role, text, recipient, type, replyTo, sender
       writePrivate(join(inboxDir, `${inboxSlug(to)}.json`), JSON.stringify(msg))
     } catch {}
     if (recipientAgent) {
+      recordActivity(recipientAgent.id, { kind: 'message', text: `from ${from}: ${msg.text}` })
       recipientAgent.unread = (recipientAgent.unread ?? 0) + 1
       saveAgents()
       broadcast({ type: 'inbox_update', agentId: recipientAgent.id, unread: recipientAgent.unread })
@@ -2292,7 +2303,7 @@ function sendAgentMessage({ sender, role, text, recipient, type, replyTo, sender
 app.get('/agents', (_req, res) => {
   const agents = Array.from(activeAgents.values())
     .filter(a => !a.server && a.state !== 'completed')
-    .map(({ id, name, role, task, state, status, lastError, background, spawnedAt, lastActivityAt, unread, parentId, parentSubagentId, sessionId, project }) => ({
+    .map(({ id, name, role, task, state, status, lastError, background, spawnedAt, lastActivityAt, unread, parentId, parentSubagentId, sessionId, project, createdBy, routedBy }) => ({
       id, name, role, task, state, status, lastError, background, spawnedAt, lastActivityAt, unread: unread ?? 0,
       // Lineage: the subagent that spawned this one and, once that parent is linked, its office id
       parentId: parentId ?? lookupAgentId(parentSubagentId) ?? undefined,
@@ -2300,6 +2311,7 @@ app.get('/agents', (_req, res) => {
       // The Claude Code session (terminal) this agent works for
       sessionId,
       project,
+      createdBy, routedBy,
     }))
   res.json({ agents })
 })
@@ -2391,6 +2403,9 @@ function inspectAgent(agent, { withText }) {
     subagentId: agent.subagentId,
     sessionId: agent.sessionId,
     project: agent.project,
+    cwd: session?.cwd,
+    createdBy: agent.createdBy,
+    routedBy: agent.routedBy,
     ...activityNow,
     stats,
     ...section,
@@ -2570,9 +2585,9 @@ app.post('/chat/reply', requireToken, (req, res) => {
 /**
  * POST /chat/inbox/read — the recipient has read its directed messages.
  * Body: { recipient: "Debugger" }  (office id, subagent id, name or role)
- * Clears the unread badge on the agent's desk. Needs the bearer token.
+ * Clears the unread badge on the agent's desk. Needs the file token or the office UI token.
  */
-app.post('/chat/inbox/read', requireToken, (req, res) => {
+app.post('/chat/inbox/read', requireUi, (req, res) => {
   const recipient = clampString(req.body?.recipient)?.trim()
   if (!recipient) return res.status(400).json({ error: 'Missing recipient' })
   const agent = findAgent(recipient)
@@ -2793,6 +2808,12 @@ function processEvent(body) {
     }
     case 'agent_spawned': {
       const agent = body.agent ?? {}
+      if (cleanCreator(agent.createdBy)) {
+        const cwd = body.cwd || currentOffice().context.cwd
+        const candidates = [...sessions.values()].filter(session => session.state === 'active' && session.cwd && canonicalCwd(session.cwd) === canonicalCwd(cwd))
+        const session = candidates.find(session => session.source !== 'office-chat') ?? candidates[0]
+        body = { ...body, cwd, sessionId: session?.id ?? 'office-chat', project: session?.project ?? projectName(undefined, cwd), source: 'office-chat' }
+      }
       const id = resolveAgentId(agent)
       prunePendingStarts()
       const session = touchSession(body)
@@ -2821,6 +2842,8 @@ function processEvent(body) {
         state:  'new-hire',
         spawnedAt: now,
         lastActivityAt: now,
+        createdBy: cleanCreator(agent.createdBy),
+        routedBy: typeof agent.routedBy === 'string' ? agent.routedBy.slice(0, 80) : undefined,
       }
       setLineage(record, agent.parentSubagentId)
       attachAgentToSession(record, session)

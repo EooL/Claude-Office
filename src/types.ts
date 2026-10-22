@@ -19,6 +19,8 @@ export interface Position {
   y: number
 }
 
+export interface AgentCreator { kind: 'boss' | 'orchestrator' | 'agent'; name: string; messageId?: number }
+
 export interface Agent {
   id: string
   name: string
@@ -39,8 +41,10 @@ export interface Agent {
   hiredAt: number
   pathQueue?: { x: number; y: number }[]  // waypoints to walk through
   unread?: number           // directed agent-to-agent messages not yet read
-  sessionId?: string        // the Claude Code session (terminal) this agent works for
+  sessionId?: string        // the terminal or logical office-chat session this agent works for
   project?: string          // that session's project (basename of its cwd)
+  createdBy?: AgentCreator
+  routedBy?: string
   lastFailed?: boolean      // the last agent_working for this agent was a tool failure
   // The per-session Claude (id `main-<sessionId>`) only: what its main thread is doing
   mainState?: MainState     // undefined = not heard from yet
@@ -186,7 +190,7 @@ export interface SessionInfo {
   cwd?: string
   title?: string
   model?: string
-  source?: string           // startup | resume | compact | clear | fork | implicit
+  source?: string           // startup | resume | compact | clear | fork | implicit | office-chat
   state: 'active' | 'ended'
   reason?: string           // why it ended
   startedAt?: number

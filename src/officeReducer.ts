@@ -406,6 +406,8 @@ export function hookVerdict(h: HealthState, now: number, warnAfterMs = HOOK_WARN
 // ---------------------------------------------------------------------------
 
 interface SpawnFields {
+  createdBy?: Agent['createdBy']
+  routedBy?: string
   id?: string
   name?: string
   role?: string
@@ -440,6 +442,8 @@ function spawnAgent(state: OfficeState, raw: SpawnFields, env: OfficeEnv, announ
   const cfg = cfgFor(role)
   const effects: OfficeEffect[] = [{ kind: 'sfx', sfx: 'doorOpen' }]
   const common = {
+    createdBy: raw.createdBy,
+    routedBy: raw.routedBy,
     sessionId: raw.sessionId,
     project: raw.project,
     unread: raw.unread || undefined,

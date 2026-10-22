@@ -71,6 +71,8 @@ export interface Inspection {
   lastError?: string
   sessionId?: string
   project?: string
+  createdBy?: Agent['createdBy']
+  routedBy?: string
   cwd?: string
   title?: string
   model?: string
@@ -243,6 +245,8 @@ export function fallbackInspection(agent: Agent, sessions: SessionInfo[] = []): 
     status: agent.statusText,
     sessionId: agent.sessionId,
     project: agent.project ?? session?.project,
+    createdBy: agent.createdBy,
+    routedBy: agent.routedBy,
     cwd: session?.cwd,
     title: session?.title,
     model: agent.model ?? session?.model,
@@ -285,5 +289,5 @@ export function cardSide(x: number | undefined): 'left' | 'right' {
 
 /** A session id as the card prints it */
 export function shortSession(id: string | undefined): string | null {
-  return id ? id.slice(0, 8) : null
+  return id === 'office-chat' ? id : id ? id.slice(0, 8) : null
 }

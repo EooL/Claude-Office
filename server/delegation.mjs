@@ -24,12 +24,13 @@
 //   }
 import { routeMessage } from './roles.mjs'
 import { clipDelegationChat } from './chat-limits.mjs'
+import { reportBackText } from './delegation-identity.mjs'
 import { classifyFailure } from './availability.mjs'
 import { loadProfile, profileSystemPrompt } from './agent-profiles.mjs'
 import { officeHome } from './paths.mjs'
 import { composeAgentPrompt, renderMasterPrompt } from './master-prompt.mjs'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { createHash } from 'node:crypto'
@@ -229,13 +230,13 @@ async function reportChatStatus(deps, state, name, role, detail) {
   try { await deps.status?.(state ? { state, agent: { name, role }, ...(detail ? { detail } : {}) } : null) } catch { /* progress must never prevent the work */ }
 }
 
-async function work(deps, { name, role, task, mode, prompt, timeoutMs, status }) {
+async function work(deps, { name, role, task, mode, prompt, timeoutMs, status, identity = deps.identity }) {
   const id = `deleg-${randomUUID()}`
   const primary = deps.agent(role)
-  const job = { id, name, role, task, phase: mode, at: deps.now() }
+  const job = { ...identity, id, name, role, task, phase: mode, at: deps.now() }
   deps.write({ busy: { id, name, kind: mode, pid: deps.pid, at: deps.now() }, lastJob: { ...job, status: 'running' } })
   await reportChatStatus(deps, mode === 'plan' ? 'planning' : 'working', name, role)
-  await deps.hire({ id, name, role, task })
+  await deps.hire({ ...identity, id, name, role, task, cwd: deps.cwd, project: deps.cwd ? basename(deps.cwd) : undefined })
   await deps.working(id, status)
   let result
   try {
@@ -254,15 +255,21 @@ async function work(deps, { name, role, task, mode, prompt, timeoutMs, status })
   })
   deps.write({ busy: undefined, lastJob: { ...job, status: failed ? 'failed' : mode === 'plan' ? 'planned' : 'finished', failureKind, service, finishedAt: deps.now() } })
   if (failed) {
-    await deps.say(name, role, delegationStatus(deps.read(), deps.now()))
+    await reportResult(deps, name, role, delegationStatus(deps.read(), deps.now()), { ...identity, task })
     await reportChatStatus(deps, 'failed', name, role, FAILURE_TEXT[failureKind] ?? FAILURE_TEXT.other)
     return null
   }
   return { ...result, service }
 }
 
+async function reportResult(deps, name, role, text, identity) {
+  if (deps.report) return deps.report(name, role, text, identity)
+  return deps.say(name, role, reportBackText(text, identity?.task, identity?.createdBy))
+}
+
 /** The plan step: read-only run, then the plan goes to the chat and waits for /goal. */
-export async function startPlan(deps, { name, role, task }) {
+export async function startPlan(deps, { name, role, task, ...identity }) {
+  identity = { ...deps.identity, ...identity }
   const state = deps.read()
   if (isBusy(state, deps.now())) {
     await deps.say(name, role, `Hang on boss, ${state.busy.name} is still on the last job.`)
@@ -271,13 +278,13 @@ export async function startPlan(deps, { name, role, task }) {
   // A failed replacement must never leave an unrelated old plan executable by /goal.
   deps.write({ plan: undefined })
   const result = await work(deps, {
-    name, role, task, mode: 'plan', timeoutMs: PLAN_TIMEOUT_MS, status: 'reading the code',
+    name, role, task, identity, mode: 'plan', timeoutMs: PLAN_TIMEOUT_MS, status: 'reading the code',
     prompt: planPrompt({ name, role, task, cwd: deps.cwd }),
   })
   if (!result) return
   const { plan, goal } = parsePlan(result.text)
-  deps.write({ pending: undefined, plan: { name, role, task, plan, goal: goal || task, service: result.service, at: deps.now() } })
-  await deps.say(name, role, clip(`Boss, I have a plan:\n${plan}\n\nSay /goal to send me, or /goal <changes> to adjust it.`))
+  deps.write({ pending: undefined, plan: { ...identity, name, role, task, plan, goal: goal || task, service: result.service, at: deps.now() } })
+  await reportResult(deps, name, role, clip(`Boss, I have a plan:\n${plan}\n\nSay /goal to send me, or /goal <changes> to adjust it.`), { ...identity, task })
   await reportChatStatus(deps, 'awaiting_approval', name, role)
 }
 
@@ -302,16 +309,17 @@ export async function handleGoal(deps, text) {
   // Synchronous inspection keeps the busy reservation in work() before the first await.
   const before = boundarySnapshot(deps.cwd)
   const result = await work(deps, {
+    identity: { sessionId: plan.sessionId, createdBy: plan.createdBy, routedBy: plan.routedBy, ...deps.identity },
     name: plan.name, role: plan.role, task: short(goal), mode: 'write', timeoutMs: GOAL_TIMEOUT_MS, status: 'working on the goal',
     prompt: goalPrompt({ name: plan.name, role: plan.role, goal, plan: plan.plan, cwd: deps.cwd }),
   })
   const report = boundaryReport(before, boundarySnapshot(deps.cwd))
   if (!result) {
-    await deps.say(plan.name, plan.role, `Execution did not finish.\n${report}`)
+    await reportResult(deps, plan.name, plan.role, `Execution did not finish.\n${report}`, { ...plan, ...deps.identity })
     return
   }
   deps.write({ plan: undefined })
-  await deps.say(plan.name, plan.role, `${clip(`Execution finished. Reported result:\n${result.text}`)}\n${report}`)
+  await reportResult(deps, plan.name, plan.role, `${clip(`Execution finished. Reported result:\n${result.text}`)}\n${report}`, { ...plan, ...deps.identity })
   await reportChatStatus(deps, 'done', plan.name, plan.role)
 }
 
@@ -326,7 +334,7 @@ export async function handleMessage(deps, text, startInBackground) {
   const message = normaliseMessage(text)
   const retry = /^(?:please )?(?:retry(?: the last task)?|try again)[.!?]*$/.test(message)
   if (retry && state.lastJob?.status === 'failed') {
-    await startInBackground({ name: state.lastJob.name, role: state.lastJob.role, task: state.lastJob.task })
+    await startInBackground({ ...deps.identity, name: state.lastJob.name, role: state.lastJob.role, task: state.lastJob.task })
     return 'handled'
   }
   if (/what i (?:asked|requested)|last task|anyone working|^(?:status|progress)[?! .]*$/.test(message)) {
@@ -335,10 +343,10 @@ export async function handleMessage(deps, text, startInBackground) {
   }
 
   if (state.pending && now - state.pending.at < PENDING_TTL_MS) {
-    const { name, role, task } = state.pending
+    const { name, role, task, ...pendingIdentity } = state.pending
     if (isYes(text)) {
       deps.write({ pending: undefined })
-      await startInBackground({ name, role, task })
+      await startInBackground({ ...deps.identity, ...pendingIdentity, name, role, task })
       return 'handled'
     }
     if (isNo(text)) {
@@ -375,11 +383,11 @@ export async function handleMessage(deps, text, startInBackground) {
 
   const task = String(text).slice(0, 6000)
   if (verdict.kind === 'task' && verdict.confidence >= CONFIDENT) {
-    await startInBackground({ name, role, task })
+    await startInBackground({ ...deps.identity, name, role, task })
     return 'handled'
   }
   // Not sure it is a job: ask, and let the next yes / no decide
-  deps.write({ pending: { name, role, task, at: now } })
+  deps.write({ pending: { ...deps.identity, name, role, task, at: now } })
   await deps.say(name, role, `Boss, do you want me to take that on? (${short(task, 120)}) Say yes or no.`)
   await reportChatStatus(deps, 'awaiting_approval', name, role, 'Waiting for you to confirm this task')
   return 'handled'

@@ -57,12 +57,17 @@ afterAll(async () => {
 describe('the real detached delegation runtime with isolated CLI fixtures', () => {
   it('starts a visible worker, falls back after a permission failure and persists a plan', async () => {
     const task = 'Review the fixture and prepare an English PR description with screenshots'
+    await fetch(`http://127.0.0.1:${env.AGENT_OFFICE_PORT}/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sender: 'Boss', text: task }) })
+    const request = (await (await fetch(`http://127.0.0.1:${env.AGENT_OFFICE_PORT}/chat`)).json()).messages.findLast((m: any) => m.text === task)
     expect((await command('message', task)).stdout).toBe('handled')
     await until(() => read().busy?.kind === 'plan')
     await until(async () => (await fetch(`http://127.0.0.1:${env.AGENT_OFFICE_PORT}/agents`)).json().then(o => o.agents.length > 0))
     await until(() => read().plan)
     expect(read().plan).toMatchObject({ task, service: 'codex' })
     expect(read().lastJob.status).toBe('planned')
+    expect(read().plan).toMatchObject({ sessionId: 'office-chat', createdBy: { kind: 'boss', name: 'Boss', messageId: request.id }, routedBy: 'assistant' })
+    const worker = office.server.activeAgents.get(read().lastJob.id)
+    expect(worker).toMatchObject({ sessionId: 'office-chat', createdBy: { messageId: request.id } })
     const circuits = JSON.parse(readFileSync(join(office.dir, 'cooldowns.json'), 'utf8'))
     expect(circuits['agy@plan']).toMatchObject({ state: 'open', kind: 'permission' })
     const calls = readFileSync(join(office.dir, 'calls.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
@@ -85,5 +90,6 @@ describe('the real detached delegation runtime with isolated CLI fixtures', () =
     expect(readFileSync(join(office.dir, 'edits.txt'), 'utf8')).toBe('one execution\n')
     expect(read().plan).toBeUndefined()
     expect(read().busy).toBeUndefined()
+    expect(read().lastJob.createdBy).toMatchObject({ kind: 'boss', name: 'Boss', messageId: goal.id })
   })
 })

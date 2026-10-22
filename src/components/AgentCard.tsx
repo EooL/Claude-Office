@@ -20,6 +20,7 @@ import {
   historyMark, transcriptEmptyText, transcriptLine, fallbackInspection, promptAndReply, shortSession, derivedNote, cardSide,
 } from '../inspector'
 import { getUiToken } from '../permissions'
+import { officeHttpBase } from '../serverUrl'
 import '../styles/inspector.css'
 
 interface AgentCardProps {
@@ -68,7 +69,16 @@ const AgentCard: React.FC<AgentCardProps> = ({ agentId, agent, sessions = [], on
         // A finished worker answers 404 once the server lets it go: keep its last card
         if (res.status === 404) { setMissing('unknown'); return }
         if (!res.ok) { setMissing('unreachable'); return }
-        setData(await res.json() as Inspection)
+        const payload = await res.json() as Inspection
+        if (token && payload.kind === 'worker' && payload.stats.unread > 0) {
+          const read = await fetch(`${officeHttpBase()}/chat/inbox/read`, {
+            method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ recipient: agentId }), signal: AbortSignal.timeout(1500),
+          }).catch(() => null)
+          if (read?.ok) { payload.stats.unread = 0; payload.unread = 0 }
+        }
+        if (cancelled) return
+        setData(payload)
         setMissing(null)
       } catch {
         if (!cancelled) setMissing('unreachable')
@@ -209,7 +219,8 @@ const AgentCard: React.FC<AgentCardProps> = ({ agentId, agent, sessions = [], on
               {!done && finished.length > 0 && <div className="ac-text">so far: {finished.join(' · ')}</div>}
               {derived && finished.length > 0 && <div className="ac-sub" title={derived}>{derived}</div>}
               <div className="ac-kv">
-                <span className="ac-kv-item">{insp.stats.parent ? `parent ${insp.stats.parent.name}` : 'spawned by the session'}</span>
+                <span className="ac-kv-item">{insp.createdBy ? `requested by ${insp.createdBy.name}${insp.createdBy.messageId ? ` · message #${insp.createdBy.messageId}` : ''}` : insp.stats.parent ? `parent ${insp.stats.parent.name}` : 'spawned by the session'}</span>
+                {insp.routedBy && <span className="ac-kv-item">routed by {insp.routedBy} (orchestrator)</span>}
                 {insp.background && <span className="ac-kv-item">background</span>}
                 <span className={`ac-kv-item${insp.stats.unread ? ' unread' : ''}`}>✉ {insp.stats.unread} unread</span>
               </div>
